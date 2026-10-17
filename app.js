@@ -116,6 +116,8 @@ async function gh(path, opts = {}) {
       ...(opts.headers || {}),
     },
   });
+  if (res.status === 401) throw new Error('رمز GitHub غير صالح أو منتهي — أنشئ رمزاً جديداً.');
+  if (res.status === 404) throw new Error(`لا يرى الرمز المستودع ${repo}: تأكد أن الرمز Fine-grained، وفي Repository access اخترت Only select repositories ثم ${repo.split('/')[1] || 'المستودع'}، ومعه Contents: Read and write.`);
   if (!res.ok) throw new Error(`GitHub ${res.status}: ${(await res.text()).slice(0, 160)}`);
   return res;
 }
