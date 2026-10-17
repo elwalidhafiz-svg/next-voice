@@ -141,7 +141,8 @@ def track_sync(ok, error=""):
                 tg_send("✅ عادت مزامنة نيكست الصوتي مع GitHub للعمل.")
             except Exception:  # noqa: BLE001
                 return  # نحاول الإبلاغ في الدورة التالية
-        save_state({"failures": 0, "alerted": False})
+        state.update(failures=0, alerted=False)
+        save_state(state)
         return
     state["failures"] = state.get("failures", 0) + 1
     if state["failures"] >= SYNC_ALERT_AFTER and not state.get("alerted"):
@@ -149,6 +150,44 @@ def track_sync(ok, error=""):
             tg_send(f"⚠️ مزامنة نيكست الصوتي مع GitHub متوقفة منذ {state['failures'] * 2} دقائق تقريباً، "
                     f"فلا يصل نيكست الصوتي جديد الـ Vault ولا تُنفَّذ طلباته.\nالسبب: {error[:300]}")
             state["alerted"] = True
+        except Exception:  # noqa: BLE001
+            pass
+    save_state(state)
+
+
+TG_DOWN_ALERT_MIN = 10
+
+
+def telegram_next_running():
+    """جلسة نيكست تيليجرام حيّة؟ (خادم القناة يكتب رقمه في bot.pid)"""
+    try:
+        pid = int((TG_DIR / "bot.pid").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    proc = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
+    return "server.ts" in proc.stdout
+
+
+def watch_telegram_next():
+    """تنبيه واحد إن توقف نيكست تيليجرام أكثر من TG_DOWN_ALERT_MIN دقائق، ورسالة عند عودته."""
+    state = load_state()
+    now = datetime.now(timezone.utc)
+    if telegram_next_running():
+        if state.get("tg_alerted"):
+            try:
+                tg_send("✅ عاد نيكست تيليجرام للعمل.")
+            except Exception:  # noqa: BLE001
+                return
+        state.update(tg_down_since=None, tg_alerted=False)
+        save_state(state)
+        return
+    since = state.get("tg_down_since") or now.isoformat()
+    state["tg_down_since"] = since
+    down_min = (now - datetime.fromisoformat(since)).total_seconds() / 60
+    if down_min >= TG_DOWN_ALERT_MIN and not state.get("tg_alerted"):
+        try:
+            tg_send("⚠️ نيكست تيليجرام متوقف، فلن يرد على رسائلك هنا.\nافتح على الماك «تشغيل نيكست تيليجرام» (في الـ Vault: _System ← Telegram Assistant).")
+            state["tg_alerted"] = True
         except Exception:  # noqa: BLE001
             pass
     save_state(state)
@@ -490,6 +529,10 @@ def main():
     if "--index-only" in args:
         return 0
     status = sync()
+    try:
+        watch_telegram_next()
+    except Exception as e:  # noqa: BLE001
+        log("خطأ في مراقبة نيكست تيليجرام:", e)
     if status == 0:
         try:
             process_big_requests()
