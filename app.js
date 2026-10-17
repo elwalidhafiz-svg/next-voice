@@ -210,11 +210,15 @@ function riyadhNow() {
   return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
 }
 
+const BIG_KIND = 'سؤال لنيكست الكبير';
+
 async function addToInbox({ title, content, kind = 'ملاحظة' }) {
   const { date, time } = riyadhNow();
   const safe = (title || 'ملاحظة صوتية').replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
   const path = `Inbox/${date} ${time.replace(':', '')} صوتي - ${safe}.md`;
-  const body = `---\nsource: نيكست الصوتي\nkind: ${kind}\ncreated: ${date} ${time}\n---\n# ${safe}\n\n${content}\n`;
+  // طلبات نيكست الكبير يلتقطها سكربت الماك بحالة pending (انظر next_voice_sync.py)
+  const extra = kind === BIG_KIND ? `status: pending\ncreated_utc: ${new Date().toISOString()}\n` : '';
+  const body = `---\nsource: نيكست الصوتي\nkind: ${kind}\ncreated: ${date} ${time}\n${extra}---\n# ${safe}\n\n${content}\n`;
   if (settings().repo === 'local') {
     console.info('[local] add_to_inbox', path, body);
   } else {
@@ -256,16 +260,32 @@ const TOOLS = [{
     },
     {
       name: 'add_to_inbox',
-      description: 'سجّل شيئاً في Inbox/ ليُعالَج لاحقاً (ملاحظة، مهمة، قرار، فكرة، أو سؤال يحتاج نيكست الكبير). هذه الطريقة الوحيدة للكتابة في الـ Vault.',
+      description: 'سجّل شيئاً في Inbox/ ليُعالَج لاحقاً (ملاحظة، مهمة، قرار، فكرة). للطلبات التي لا تستطيع تنفيذها استخدم ask_big_next بدلاً منها.',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'عنوان قصير' },
           content: { type: 'string', description: 'المحتوى مستخلصاً بالفصحى، مع الأسماء والتواريخ والمبالغ كما قالها' },
-          kind: { type: 'string', enum: ['ملاحظة', 'مهمة', 'قرار', 'فكرة', 'سؤال لنيكست الكبير'] },
+          kind: { type: 'string', enum: ['ملاحظة', 'مهمة', 'قرار', 'فكرة'] },
         },
         required: ['title', 'content'],
       },
+    },
+    {
+      name: 'ask_big_next',
+      description: 'أرسل طلباً إلى نيكست الكبير (Claude على الماك) حين يحتاج ما لا تملكه: واتساب، الشيتات، Gmail، Trello، To Do، تقرير، أو تحليل عميق. ينفّذه ويرسل الرد للوليد على تيليجرام خلال دقائق إن كان الماك مفتوحاً، وإلا يسأله عند فتح الماك.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'عنوان قصير للطلب' },
+          request: { type: 'string', description: 'الطلب كاملاً وواضحاً بالفصحى، بالأسماء والتواريخ والسياق من المكالمة، ليفهمه دون أن يسمعها' },
+        },
+        required: ['title', 'request'],
+      },
+    },
+    {
+      name: 'big_next_status',
+      description: 'حالة طلبات نيكست الكبير الأخيرة وردوده (من آخر مزامنة للـ Vault).',
     },
   ],
 }];
@@ -286,6 +306,24 @@ async function runTool(name, args = {}) {
       return { text: openLoopsText().slice(0, 14000) };
     case 'add_to_inbox':
       return { ok: true, path: await addToInbox(args) };
+    case 'ask_big_next':
+      return {
+        ok: true,
+        path: await addToInbox({ title: args.title, content: args.request, kind: BIG_KIND }),
+        note: 'أُرسل. إن كان الماك مفتوحاً يصل الرد على تيليجرام خلال دقائق، وإلا يُسأل الوليد عنه عند فتح الماك.',
+      };
+    case 'big_next_status': {
+      const items = vault.notes
+        .filter((n) => n.path.startsWith('Inbox/') && n.text.includes(`kind: ${BIG_KIND}`))
+        .sort((a, b) => b.path.localeCompare(a.path))
+        .slice(0, 5)
+        .map((n) => ({
+          path: n.path,
+          status: (n.text.match(/^status: (.*)$/m) || [])[1] || 'غير معروف',
+          answer: (n.text.split('## ردّ نيكست الكبير')[1] || '').trim().slice(0, 2500) || null,
+        }));
+      return items.length ? { requests: items, note: `من فهرس ${vault.built || '—'}` } : { requests: [], note: 'لا طلبات.' };
+    }
     default:
       return { error: 'أداة غير معروفة' };
   }
@@ -513,6 +551,7 @@ async function onMessage(m, ref) {
       let response;
       try { response = await runTool(fc.name, fc.args); } catch (e) { response = { error: String(e.message || e) }; }
       if (fc.name === 'add_to_inbox' && response.ok) note('tool', '✓ سُجّل في ' + response.path);
+      if (fc.name === 'ask_big_next' && response.ok) note('tool', '✓ أُرسل — الرد على تيليجرام');
       responses.push({ id: fc.id, name: fc.name, response, scheduling: FunctionResponseScheduling.INTERRUPT });
     }
     if (session && session === call.session) session.sendToolResponse({ functionResponses: responses });
@@ -534,6 +573,8 @@ function toolLabel(name, args = {}) {
     case 'read_note': return `📄 يقرأ: ${args.name || ''}`;
     case 'open_loops': return '📋 يقرأ البنود المفتوحة';
     case 'add_to_inbox': return `✍️ يسجّل: ${args.title || ''}`;
+    case 'ask_big_next': return `📨 إلى نيكست الكبير: ${args.title || ''}`;
+    case 'big_next_status': return '📬 يراجع ردود نيكست الكبير';
     default: return name;
   }
 }
