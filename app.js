@@ -22,16 +22,78 @@ const VOICES = [
 const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md'];
 const OPEN_LOOPS = '_System/Open Loops.md';
 
-// ---------- تخزين محلي آمن ----------
-// إن مُنع localStorage (تصفح خاص مثلاً) تبقى الإعدادات في الذاكرة حتى إغلاق الصفحة
+// ---------- تخزين محلي دائم ----------
+// iOS قد يمسح localStorage أو يمنعه، فتُحفظ الإعدادات في ثلاثة أماكن وتُستعاد من أيها بقي:
+// localStorage و IndexedDB و Cache Storage. الذاكرة هي المصدر أثناء التشغيل.
 const memory = new Map();
+const LS_PREFIX = 'nv.';
+const storage = { ls: false, idb: false, cache: false, persisted: false };
+
+function idb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('next-voice', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGet() {
+  const db = await idb();
+  return new Promise((resolve, reject) => {
+    const r = db.transaction('kv').objectStore('kv').get('settings');
+    r.onsuccess = () => resolve(r.result || null);
+    r.onerror = () => reject(r.error);
+  });
+}
+async function idbPut(obj) {
+  const db = await idb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('kv', 'readwrite');
+    tx.objectStore('kv').put(obj, 'settings');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+const CACHE_URL = new URL('__nv_settings__', location.href).href;
+async function cacheGet() {
+  const res = await (await caches.open('next-voice')).match(CACHE_URL);
+  return res ? res.json() : null;
+}
+async function cachePut(obj) {
+  await (await caches.open('next-voice')).put(CACHE_URL, new Response(JSON.stringify(obj)));
+}
+function lsGet() {
+  const obj = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k.startsWith(LS_PREFIX)) obj[k.slice(LS_PREFIX.length)] = localStorage.getItem(k);
+  }
+  return Object.keys(obj).length ? obj : null;
+}
+
+async function persistAll() {
+  const obj = Object.fromEntries(memory);
+  try { for (const [k, v] of memory) localStorage.setItem(LS_PREFIX + k, v); storage.ls = true; } catch { storage.ls = false; }
+  try { await idbPut(obj); storage.idb = true; } catch { storage.idb = false; }
+  try { await cachePut(obj); storage.cache = true; } catch { storage.cache = false; }
+}
+
+async function initStore() {
+  let found = null;
+  for (const read of [async () => lsGet(), idbGet, cacheGet]) {
+    try { found = await read(); } catch { found = null; }
+    if (found && (found.key || found.token)) break;
+  }
+  if (found) for (const [k, v] of Object.entries(found)) memory.set(k, String(v));
+  try { storage.persisted = (await navigator.storage?.persist?.()) || false; } catch {}
+  await persistAll(); // يعيد الكتابة في كل الأماكن، فما مُسح من أحدها يُستعاد
+}
+
 const store = {
-  get(k, d = '') {
-    try { const v = localStorage.getItem('nv.' + k); if (v !== null) return v; } catch {}
-    return memory.get(k) ?? d;
-  },
-  set(k, v) { memory.set(k, v); try { localStorage.setItem('nv.' + k, v); } catch {} },
+  get(k, d = '') { return memory.get(k) ?? d; },
+  set(k, v) { memory.set(k, v); persistAll(); },
 };
+await initStore();
 // #local للتجربة على الماك فقط
 const devRepo = location.hash === '#local' && ['localhost', '127.0.0.1'].includes(location.hostname) ? 'local' : '';
 const settings = () => ({
@@ -716,7 +778,18 @@ for (const [v, label] of VOICES) sel.add(new Option(label, v));
 function fillSettings() {
   const s = settings();
   $('sKey').value = s.key; $('sToken').value = s.token; $('sRepo').value = store.get('repo'); sel.value = s.voice;
-  $('checkResult').textContent = '';
+  showStorage();
+}
+function showStorage() {
+  const out = $('checkResult');
+  const where = [storage.ls && 'localStorage', storage.idb && 'IndexedDB', storage.cache && 'Cache'].filter(Boolean);
+  if (where.length) {
+    out.style.color = 'var(--muted)';
+    out.textContent = `الحفظ: ✓ على هذا الجهاز (${where.join(' + ')})${storage.persisted ? ' · دائم' : ''}`;
+  } else {
+    out.style.color = 'var(--warn)';
+    out.textContent = '⚠️ المتصفح يمنع الحفظ (تصفح خاص، أو «حظر كل ملفات تعريف الارتباط» في إعدادات Safari) — ستُطلب الإعدادات عند كل فتح.';
+  }
 }
 function saveSettings() {
   store.set('key', $('sKey').value.trim());
@@ -725,9 +798,9 @@ function saveSettings() {
   store.set('voice', sel.value);
 }
 $('settingsBtn').addEventListener('click', () => { fillSettings(); dlg.showModal(); });
-dlg.addEventListener('close', () => {
-  if (dlg.returnValue === 'save') { saveSettings(); setStatus('حُفظت الإعدادات'); }
-});
+// الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
+$('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
+for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
 $('testBtn').addEventListener('click', async () => {
   saveSettings();
   const out = $('checkResult');
@@ -747,4 +820,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect };
+window.__nv = { searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet };
