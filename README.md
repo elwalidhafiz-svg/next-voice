@@ -68,3 +68,8 @@ python3 sync/next_voice_sync.py --index-only --out web/local-index.json
 python3 -m http.server 8765 --directory web
 ```
 ثم افتح `http://localhost:8765/#local` (يقرأ الفهرس المحلي ولا يكتب شيئاً).
+
+## مكان الكود والنشر
+- النسخة الدائمة على الماك: `~/Documents/next-voice` (هذا المستودع). مهمة launchd `com.elwalid.nextvoice.sync` تشغّل `sync/next_voice_sync.py` منها مباشرة كل دقيقتين.
+- تعديل الصفحة: عدّل الملفات هنا ثم `git push`، فينشرها GitHub Pages خلال دقيقة.
+- السجل: `~/Library/Logs/next-voice-sync.log`، وحالة المزامنة في `~/.local/share/next-voice/state.json`.

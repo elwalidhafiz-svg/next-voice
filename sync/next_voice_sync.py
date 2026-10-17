@@ -26,6 +26,10 @@ VAULT = Path.home() / "Documents" / "My Vault"
 BIG_KIND = "سؤال لنيكست الكبير"
 STALE_MIN = 60
 CLAUDE_TIMEOUT = 15 * 60
+STUCK_MIN = 20          # طلب «working» أطول من هذا يُعاد (انقطع التشغيل أثناء تنفيذه)
+MAX_ATTEMPTS = 2        # بعدها يُعلَّم failed ويُبلَّغ
+SYNC_ALERT_AFTER = 3    # فشل مزامنة متتالٍ قبل تنبيه تيليجرام
+STATE = Path.home() / ".local" / "share" / "next-voice" / "state.json"
 TG_DIR = Path.home() / ".claude" / "channels" / "telegram"
 LAST_BATCH = Path(".next-voice") / "last_batch.json"
 CHANGES_MARK = "---التغييرات---"
@@ -109,24 +113,69 @@ def git(*args):
     )
 
 
+def abort_stuck_rebase():
+    """تعارض سابق قد يترك rebase معلّقاً فتتوقف كل مزامنة بعده؛ نلغيه."""
+    if (VAULT / ".git" / "rebase-merge").exists() or (VAULT / ".git" / "rebase-apply").exists():
+        git("rebase", "--abort")
+        print("أُلغي rebase معلّق من دورة سابقة.")
+
+
+def load_state():
+    try:
+        return json.loads(STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state):
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def track_sync(ok, error=""):
+    """تنبيه واحد على تيليجرام بعد SYNC_ALERT_AFTER فشلاً متتالياً، ورسالة عند العودة."""
+    state = load_state()
+    if ok:
+        if state.get("alerted"):
+            try:
+                tg_send("✅ عادت مزامنة نيكست الصوتي مع GitHub للعمل.")
+            except Exception:  # noqa: BLE001
+                return  # نحاول الإبلاغ في الدورة التالية
+        save_state({"failures": 0, "alerted": False})
+        return
+    state["failures"] = state.get("failures", 0) + 1
+    if state["failures"] >= SYNC_ALERT_AFTER and not state.get("alerted"):
+        try:
+            tg_send(f"⚠️ مزامنة نيكست الصوتي مع GitHub متوقفة منذ {state['failures'] * 2} دقائق تقريباً، "
+                    f"فلا يصل نيكست الصوتي جديد الـ Vault ولا تُنفَّذ طلباته.\nالسبب: {error[:300]}")
+            state["alerted"] = True
+        except Exception:  # noqa: BLE001
+            pass
+    save_state(state)
+
+
 def sync():
     if not (VAULT / ".git").exists() or not git("remote").stdout.strip():
         print("الـ Vault ليس مستودع git له remote بعد — تخطيت المزامنة.")
         return 0
+    abort_stuck_rebase()
     git("add", "-A")
     if git("diff", "--cached", "--quiet").returncode != 0:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         git("commit", "-q", "-m", f"vault sync {stamp}")
     pull = git("pull", "-q", "--rebase", "--autostash")
     if pull.returncode != 0:
-        git("rebase", "--abort")
+        abort_stuck_rebase()
         print("فشل pull:", pull.stderr.strip())
+        track_sync(False, pull.stderr.strip())
         return 1
     push = git("push", "-q")
     if push.returncode != 0:
         print("فشل push:", push.stderr.strip())
+        track_sync(False, push.stderr.strip())
         return 1
     print("تمت المزامنة.")
+    track_sync(True)
     return 0
 
 
@@ -273,7 +322,9 @@ def publish(message):
     git("add", "-A")
     if git("diff", "--cached", "--quiet").returncode != 0:
         git("commit", "-q", "-m", message)
-    git("pull", "-q", "--rebase", "--autostash")
+    if git("pull", "-q", "--rebase", "--autostash").returncode != 0:
+        abort_stuck_rebase()  # sync() في الدورة التالية يعيد المحاولة ويبلّغ إن تكرر الفشل
+        return
     git("push", "-q")
 
 
@@ -308,7 +359,8 @@ def execute(path, meta, body):
     rel = path.relative_to(VAULT).as_posix()
     title = (re.search(r"^# (.+)$", body, re.M) or [None, path.stem])[1]
     item = {"rel": rel, "title": title, "requested": meta.get("created", "؟"), "age": age_minutes(meta)}
-    set_fields(path, status="working")
+    attempts = int(meta.get("attempts") or 0) + 1
+    set_fields(path, status="working", working_since=datetime.now(timezone.utc).isoformat(timespec="seconds"), attempts=attempts)
     publish("voice: working on request")
     log("ينفّذ:", path.name)
     try:
@@ -398,7 +450,32 @@ def notify_pending():
     log("أُبلغ على تيليجرام:", len(items))
 
 
+def recover_stuck():
+    """طلب بقي «working» لأن التشغيل انقطع أثناء تنفيذه (غطاء الماك أُغلق مثلاً): يعود pending، أو failed بعد MAX_ATTEMPTS."""
+    changed = False
+    for path, meta, body in big_requests("working"):
+        since = meta.get("working_since")
+        try:
+            started = datetime.fromisoformat(since)
+        except (TypeError, ValueError):
+            started = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        if (datetime.now(timezone.utc) - started).total_seconds() < STUCK_MIN * 60:
+            continue
+        if int(meta.get("attempts") or 1) >= MAX_ATTEMPTS:
+            set_fields(path, status="failed", notified="no")
+            with path.open("a", encoding="utf-8") as f:
+                f.write(f"\n## فشل التنفيذ\nانقطع التنفيذ {MAX_ATTEMPTS} مرات (الماك أُغلق أو نام أثناء العمل).\n")
+            log("فشل بعد انقطاعات متكررة:", path.name)
+        else:
+            set_fields(path, status="pending")
+            log("أُعيد طلب عالق:", path.name)
+        changed = True
+    if changed:
+        publish("voice: recovered stuck requests")
+
+
 def process_big_requests():
+    recover_stuck()
     for path, meta, body in big_requests("pending"):
         item = execute(path, meta, body)
         log("فعل — سيُبلَّغ:" if is_action(item) else "سؤال — يُسمع في المكالمة التالية:", path.name)
