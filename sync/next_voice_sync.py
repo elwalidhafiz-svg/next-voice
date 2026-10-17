@@ -650,6 +650,38 @@ def recover_stuck():
         publish("voice: recovered stuck requests")
 
 
+ARCHIVE_AFTER_H = 24
+DONE_STATUSES = ("answered", "failed", "cancelled")
+
+
+def archive_done_requests():
+    """طلب نيكست الكبير المكتمل (رُدّ عليه، وأُبلغ أو سُمع) يُنقل إلى Inbox/_processed/ بعد ARCHIVE_AFTER_H ساعة.
+    ملاحظات الوليد وأفكاره (غير BIG_KIND) تبقى لأمر «عالج الـ Inbox»."""
+    out = VAULT / "Inbox" / "_processed"
+    moved = 0
+    for path in sorted((VAULT / "Inbox").glob("*.md")):
+        meta, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if meta.get("kind") != BIG_KIND or meta.get("status") not in DONE_STATUSES:
+            continue
+        if meta.get("notified") == "no" or meta.get("heard") == "no":
+            continue
+        try:
+            done = datetime.strptime(meta.get("answered", ""), "%Y-%m-%d %H:%M").replace(tzinfo=RIYADH)
+        except ValueError:
+            done = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        if (datetime.now(timezone.utc) - done).total_seconds() < ARCHIVE_AFTER_H * 3600:
+            continue
+        out.mkdir(exist_ok=True)
+        dest = out / path.name
+        if dest.exists():
+            dest = out / f"{path.stem} ({datetime.now().strftime('%H%M%S')}){path.suffix}"
+        path.rename(dest)
+        moved += 1
+    if moved:
+        publish("voice: archive done requests")
+        log("نُقل إلى Inbox/_processed:", moved)
+
+
 def process_big_requests():
     recover_stuck()
     acted = False
@@ -703,6 +735,10 @@ def main():
             process_big_requests()
         except Exception as e:  # noqa: BLE001
             log("خطأ في طلبات نيكست الكبير:", e)
+        try:
+            archive_done_requests()
+        except Exception as e:  # noqa: BLE001
+            log("خطأ في نقل الطلبات المكتملة:", e)
         try:
             snapshot_approvals(force=woke)
         except Exception as e:  # noqa: BLE001
