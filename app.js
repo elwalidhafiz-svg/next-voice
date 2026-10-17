@@ -94,6 +94,7 @@ const store = {
   set(k, v) { memory.set(k, v); persistAll(); },
 };
 await initStore();
+const DEFAULT_LANGS = 'العربية (مصرية أو فصحى)، الإنجليزية';
 // #local للتجربة على الماك فقط
 const devRepo = location.hash === '#local' && ['localhost', '127.0.0.1'].includes(location.hostname) ? 'local' : '';
 const settings = () => ({
@@ -101,6 +102,7 @@ const settings = () => ({
   token: store.get('token'),
   repo: devRepo || store.get('repo').trim(),
   voice: store.get('voice', 'Orus'),
+  langs: store.get('langs').trim() || DEFAULT_LANGS,
 });
 
 // ---------- واجهة ----------
@@ -409,6 +411,7 @@ function systemInstruction() {
     `الآن: ${weekday} ${d} ${MONTHS[mo - 1]} ${y}، الساعة ${clock} بتوقيت الرياض (${date}). انطق التواريخ بصيغة بشرية: «أمس الجمعة الساعة 5 م»، «بكرة الأحد»، لا أرقام مثل 2026-10-17.`,
     ...parts,
     `===== الكيانات التي لها ملفات (للبحث) =====\n${entities}`,
+    `===== اللغات (من إعدادات التطبيق) =====\nالوليد يتكلم فقط: ${settings().langs}. أي كلام يبدو بلغة غيرها هو إحدى هذه اللغات لم يُسمع جيداً (ضوضاء أو لهجة): افهمه على هذا الأساس أو اطلب الإعادة. لا تردّ أبداً بلغة خارج هذه القائمة.`,
     `آخر تحديث للفهرس: ${vault.built || 'غير معروف'}.`,
   ].join('\n\n');
 }
@@ -778,6 +781,7 @@ for (const [v, label] of VOICES) sel.add(new Option(label, v));
 function fillSettings() {
   const s = settings();
   $('sKey').value = s.key; $('sToken').value = s.token; $('sRepo').value = store.get('repo'); sel.value = s.voice;
+  $('sLangs').value = store.get('langs');
   showStorage();
 }
 function showStorage() {
@@ -796,11 +800,12 @@ function saveSettings() {
   store.set('token', $('sToken').value.trim());
   store.set('repo', $('sRepo').value.trim());
   store.set('voice', sel.value);
+  store.set('langs', $('sLangs').value.trim());
 }
 $('settingsBtn').addEventListener('click', () => { fillSettings(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
-for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
+for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice', 'sLangs']) $(id).addEventListener('change', saveSettings);
 $('testBtn').addEventListener('click', async () => {
   saveSettings();
   const out = $('checkResult');
