@@ -646,7 +646,21 @@ def process_big_requests():
         snapshot_approvals(force=True)
 
 
+LOG = Path.home() / "Library" / "Logs" / "next-voice-sync.log"
+
+
+def rotate_log(max_bytes=2_000_000, keep_lines=3000):
+    """السجل يكبر نحو 40KB يومياً؛ إن تجاوز 2MB يُبقى آخر 3000 سطر."""
+    try:
+        if LOG.stat().st_size > max_bytes:
+            lines = LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-keep_lines:]
+            LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main():
+    rotate_log()
     args = sys.argv[1:]
     out = VAULT / INDEX_REL
     if "--out" in args:
