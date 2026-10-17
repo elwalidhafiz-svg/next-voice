@@ -19,7 +19,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 VAULT = Path.home() / "Documents" / "My Vault"
@@ -132,6 +132,55 @@ def sync():
 
 # ---------- نيكست الكبير ----------
 
+WEEKDAYS = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
+RIYADH = timezone(timedelta(hours=3))
+
+
+def human_day(d, today):
+    """«اليوم» / «أمس الجمعة» / «الثلاثاء الماضي» / «الثلاثاء 14 أكتوبر»."""
+    name = WEEKDAYS[d.weekday()]
+    diff = (today - d).days
+    if diff == 0:
+        return "اليوم"
+    if diff == 1:
+        return f"أمس {name}"
+    if diff == 2:
+        return f"أول أمس {name}"
+    if diff == -1:
+        return f"بكرة {name}"
+    if diff == -2:
+        return f"بعد بكرة {name}"
+    if 3 <= diff <= 6:
+        return f"{name} الماضي"
+    if -6 <= diff <= -3:
+        return f"{name} الجاي"
+    year = f" {d.year}" if d.year != today.year else ""
+    return f"{name} {d.day} {MONTHS[d.month - 1]}{year}"
+
+
+def human_time(dt):
+    h12 = dt.hour % 12 or 12
+    mins = f":{dt.minute:02d}" if dt.minute else ""
+    return f"الساعة {h12}{mins} {'ص' if dt.hour < 12 else 'م'}"
+
+
+def human_when(created):
+    """«2026-10-16 17:00» (توقيت الرياض) ← «أمس الجمعة الساعة 5 م»."""
+    try:
+        dt = datetime.strptime(created.strip(), "%Y-%m-%d %H:%M")
+    except (AttributeError, ValueError):
+        return "في وقت غير معروف"
+    today = datetime.now(RIYADH).date()
+    return f"{human_day(dt.date(), today)} {human_time(dt)}"
+
+
+def human_now():
+    now = datetime.now(RIYADH)
+    return f"{human_day(now.date(), now.date())} {WEEKDAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]} {now.year}، {human_time(now)}"
+
+
+
 def log(*a):
     print(datetime.now().strftime("%H:%M:%S"), *a, flush=True)
 
@@ -193,13 +242,13 @@ def run_claude(rel, body, requested_at):
 
 {body.strip()}
 
-- **وقت الطلب: {requested_at} بتوقيت الرياض.** قد يكون التنفيذ متأخراً لأن الماك كان مغلقاً: احسب أي تاريخ نسبي (اليوم، بكرة، الأسبوع الجاي) من وقت الطلب لا من الآن، واقرأ البيانات بحالتها الآن.
+- **وقت الطلب: {requested_at} بتوقيت الرياض ({human_when(requested_at)})، والآن: {human_now()}.** قد يكون التنفيذ متأخراً لأن الماك كان مغلقاً: احسب أي تاريخ نسبي (اليوم، بكرة، الأسبوع الجاي) من وقت الطلب لا من الآن، واقرأ البيانات بحالتها الآن.
 - اقرأ CLAUDE.md و`_System/soul.md` و`_System/user.md`. لمصادر واتساب والشيتات اتبع قسم «المصادر» في `_System/Telegram Assistant/CLAUDE.md`.
 - نفّذ الطلب مباشرة دون سؤال. مسموح دون تأكيد: القراءة والتحليل، وإضافة مهام Microsoft To Do عبر Zapier، وإضافة بنود في `_System/Open Loops.md`، وتعديل ملفات الـ Vault بقواعدها.
 - ممنوع دون تأكيد: إرسال أي رسالة أو إيميل، وتعديل أي شيت، وأي تغيير خارجي آخر. اذكره في آخر ردك تحت «يحتاج تأكيدك:» ولا تنفّذه.
 - لا تعدّل ملف الطلب نفسه؛ السكربت يكتب فيه ردك.
 - ردك النهائي جزءان:
-  1. رسالة تيليجرام كما ستصل: فصحى، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:».
+  1. رسالة تيليجرام كما ستصل: فصحى، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:»، وكل تاريخ أو وقت فيها بصيغة بشرية كما في soul.md («أمس الجمعة الساعة 5 م»، «بكرة الأحد»)، لا 2026-10-17 ولا 15:10.
   2. سطر فيه `{CHANGES_MARK}` وحده، ثم كل تغيير أجريته سطراً بتفاصيل تكفي لإلغائه لاحقاً (الملف والنص المضاف، أو قائمة To Do وعنوان المهمة). إن لم تغيّر شيئاً فاكتب: لا شيء."""
     env = dict(os.environ, PATH=f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin")
     proc = subprocess.run(
@@ -266,14 +315,23 @@ def execute(path, meta, body):
 
 def delay_text(minutes):
     h = int(minutes // 60)
-    return f"بعد {h // 24} يوم" if h >= 48 else f"بعد {h} ساعة" if h >= 1 else "فوراً"
+    if h >= 48:
+        d = h // 24
+        return "بعد يومين" if d == 2 else f"بعد {d} أيام" if d <= 10 else f"بعد {d} يوماً"
+    if h >= 24:
+        return "بعد يوم"
+    if h >= 3:
+        return f"بعد {h} ساعات" if h <= 10 else f"بعد {h} ساعة"
+    if h >= 1:
+        return "بعد ساعة" if h == 1 else "بعد ساعتين"
+    return "فوراً"
 
 
 def render(item, n=None):
     head = f"{n}) " if n else ""
     if "error" in item:
         return f"{head}⚠️ {item['title']} — لم يُنفَّذ: {item['error']}"
-    lines = [f"{head}🎙️ {item['title']} (طلبتَه {item['requested']}، نُفّذ {delay_text(item['age'])})", item["answer"][:1800 if n else 2500]]
+    lines = [f"{head}🎙️ {item['title']} (طلبتَه {human_when(item['requested'])}، نُفّذ {delay_text(item['age'])})", item["answer"][:1800 if n else 2500]]
     if not no_changes(item["changes"]):
         lines.append("ما غيّرته:\n" + item["changes"][:600])
     return "\n".join(lines)

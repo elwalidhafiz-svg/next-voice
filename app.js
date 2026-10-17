@@ -337,9 +337,14 @@ function systemInstruction() {
     .map((n) => `- ${n.path}${n.aliases?.length ? ` (${n.aliases.join('، ')})` : ''}`)
     .join('\n');
   const { date, time } = riyadhNow();
+  const weekday = new Intl.DateTimeFormat('ar', { timeZone: 'Asia/Riyadh', weekday: 'long' }).format(new Date());
+  const [y, mo, d] = date.split('-').map(Number);
+  const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+  const [hh, mm] = time.split(':').map(Number);
+  const clock = `${hh % 12 || 12}${mm ? ':' + String(mm).padStart(2, '0') : ''} ${hh < 12 ? 'ص' : 'م'}`;
   return [
     'أنت نيكست في مكالمة صوتية حية مع الوليد. التعليمات أدناه من ملفات الـ Vault نفسها؛ ملف Voice Assistant يحكم شكل الكلام في هذه القناة.',
-    `الآن: ${date} الساعة ${time} بتوقيت الرياض.`,
+    `الآن: ${weekday} ${d} ${MONTHS[mo - 1]} ${y}، الساعة ${clock} بتوقيت الرياض (${date}). انطق التواريخ بصيغة بشرية: «أمس الجمعة الساعة 5 م»، «بكرة الأحد»، لا أرقام مثل 2026-10-17.`,
     ...parts,
     `===== الكيانات التي لها ملفات (للبحث) =====\n${entities}`,
     `آخر تحديث للفهرس: ${vault.built || 'غير معروف'}.`,
