@@ -19,8 +19,8 @@ const VOICES = [
   ['Leda', 'Leda — نسائي شاب'],
   ['Zephyr', 'Zephyr — نسائي مشرق'],
 ];
-// Pending Approvals وWhatsApp Today: نسختان تلقائيتان من سكربت الماك (اعتمادات الشيتين، وملخص واتساب آخر 24 ساعة)
-const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md', '_System/Pending Approvals.md', '_System/WhatsApp Today.md'];
+// Pending Approvals وToday Board: نسختان تلقائيتان من سكربت الماك (اعتمادات الشيتين، ولوحة اليوم من Open Loops وواتساب)
+const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md', '_System/Pending Approvals.md', '_System/Today Board.md'];
 const OPEN_LOOPS = '_System/Open Loops.md';
 
 // ---------- تخزين محلي دائم ----------
@@ -387,11 +387,55 @@ function doneToday() {
 function addDoneToday(item) {
   store.set('done.today', JSON.stringify({ date: riyadhNow().date, items: [...doneToday(), item] }));
 }
-function whatsappDone() {
-  const n = vault.byPath.get('_System/WhatsApp Today.md');
-  const sec = n ? (n.text.split('## يبدو أنه أُنجز اليوم')[1] || '').split('\n## ')[0].trim() : '';
+function boardSection(title) {
+  const n = vault.byPath.get('_System/Today Board.md');
+  const sec = n ? (n.text.split('## ' + title)[1] || '').split('\n## ')[0].replace(/^[^\n]*\n/, '').trim() : '';
   return sec && !/^- لا شيء/.test(sec) ? sec : '';
 }
+function whatsappDone() { return boardSection('يبدو أنه أُنجز اليوم'); }
+
+// قبل أي إغلاق: هل البند مفتوح فعلاً في Open Loops؟ وماذا يقول واتساب عنه؟
+function openLoopsLines() {
+  const n = vault.byPath.get(OPEN_LOOPS);
+  const t = n ? n.text : '';
+  const a = t.indexOf('## مفتوح'), b = t.indexOf('## مُغلق');
+  const pick = (s) => s.split('\n').filter((l) => l.startsWith('- '));
+  return { open: pick(t.slice(a === -1 ? 0 : a, b === -1 ? undefined : b)), closed: b === -1 ? [] : pick(t.slice(b)) };
+}
+// وزن الكلمة بندرتها (IDF) بين كل بنود Open Loops: الأسماء والكلمات المميزة تحسم، والعامة («تصاميم»، «غير») لا.
+const ITEM_STOP = new Set(['غير', 'شي', 'شيء', 'حاجه', 'موجود', 'اطلاقا', 'كل', 'بعد', 'قبل', 'اليوم', 'بكره', 'امس', 'خلاص', 'خلص', 'خلصت', 'تم', 'اقفل', 'اقفلها', 'مهمه', 'بند', 'بتاع', 'بتاعه', 'بتاعت', 'دي', 'ده', 'هذا', 'هذه']);
+function itemTerms(q) {
+  const out = new Set();
+  for (const t of terms(q).filter((x) => !ITEM_STOP.has(x))) {
+    out.add(t);
+    if (t.length > 4 && /^[لوب]/.test(t)) out.add(t.slice(1)); // لممورا ← ممورا، وسحر ← سحر
+  }
+  return [...out];
+}
+function rankLines(lines, query, all) {
+  const ts = itemTerms(query), docs = (all || lines).map(norm), N = docs.length || 1;
+  const idf = Object.fromEntries(ts.map((t) => {
+    const df = docs.filter((d) => d.includes(t)).length;
+    return [t, df === 0 || df / N > 0.3 ? 0 : Math.log(N / df)];
+  }));
+  return lines.map((l) => { const nl = norm(l); return { l, s: ts.reduce((k, t) => k + (nl.includes(t) ? idf[t] : 0), 0) }; })
+    .filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
+}
+function verifyItem(item) {
+  const { open, closed } = openLoopsLines();
+  const all = [...open, ...closed];
+  const o = rankLines(open, item, all), c = rankLines(closed, item, all);
+  const bo = o[0]?.s || 0, bc = c[0]?.s || 0;
+  if (bc > 0 && bc > bo * 1.2) return { state: 'closed', line: c[0].l };
+  if (bo < 1.5) return { state: 'missing' }; // لا كلمة مميزة واحدة تطابق
+  if (o.length > 1 && o[1].s >= bo * 0.85) return { state: 'ambiguous', candidates: o.slice(0, 3).map((x) => x.l.slice(2, 140)) };
+  const line = o[0].l.slice(2);
+  // الدليل فقط مما قررت لوحة اليوم أنه «يبدو أنه أُنجز» (نيكست الكبير طابقه بالبند)، لا مطابقة كلمات عابرة
+  const waLines = whatsappDone().split('\n').filter((l) => l.startsWith('- '));
+  const wa = rankLines(waLines, line.split('—')[0], all);
+  return { state: 'open', line, evidence: wa.length && wa[0].s >= 3 ? wa[0].l.replace(/^- /, '') : '' };
+}
+
 function openLoopsForVoice() {
   const parts = [openLoopsText()];
   const mine = doneToday();
@@ -515,12 +559,23 @@ const MAX_NOTE = 9000;
 // تأكيد إلزامي في الكود: أي فعل لا يُنفَّذ عند استدعاء الأداة، بل يُعلَّق حتى يقول الوليد «أيوه» بصوته
 // (أو يكتبها). النموذج يسأل، والتطبيق نفسه ينفّذ أو يلغي حسب رده.
 const GATED = (name, args) => name === 'mark_done' || name === 'add_to_inbox' || (name === 'ask_big_next' && args.type !== 'سؤال');
+// سطر Open Loops ← جملة تُنطق: بلا [[ ]] ولا تفاصيل بعد «—» أو «؛»، وبحد 90 حرفاً
+function spoken(line) {
+  return (line || '').replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').split(/ — |؛/)[0].replace(/\s*\([^)]*\)/g, '').trim().slice(0, 90);
+}
 function summarize(name, args) {
-  if (name === 'mark_done') return `هقفل: ${args.item}`;
+  if (name === 'mark_done') return `هقفل: ${spoken(args.item)}${args._wa ? ' (واتساب: ' + args._wa.slice(0, 90) + ')' : ' (مش ظاهر في واتساب إنه خلص، بس كلامك هو المرجع)'}`;
   if (name === 'add_to_inbox') return `هسجّل في الـ Inbox: ${args.title}`;
   return `هبعت لنيكست الكبير: ${args.request || args.title}`;
 }
 async function runTool(name, args = {}, confirmed = false) {
+  if (!confirmed && name === 'mark_done') {
+    const v = verifyItem(args.item || '');
+    if (v.state === 'closed') return { status: 'مقفول بالفعل — لم يُرسل شيء', closed_line: v.line, instruction: 'قل له إنه مقفول بالفعل، ومتى (من السطر).' };
+    if (v.state === 'missing') return { status: 'لا يوجد بند مفتوح بهذا الوصف — لم يُرسل شيء', instruction: 'اسأله أي بند يقصد، أو اقرأ open_loops لتجده.' };
+    if (v.state === 'ambiguous') return { status: 'أكثر من بند مفتوح يطابق — لم يُرسل شيء', candidates: v.candidates, instruction: 'اسأله أيها يقصد، ثم استدعِ الأداة بوصفه الدقيق.' };
+    args = { ...args, item: v.line.slice(0, 160), evidence: args.evidence || (v.evidence ? 'حسب واتساب: ' + v.evidence : ''), _wa: v.evidence };
+  }
   if (!confirmed && GATED(name, args)) {
     call.pending = { name, args, at: Date.now(), heard: '' };
     note('tool', `⏸ ينتظر تأكيدك: ${summarize(name, args)}`);
@@ -1193,4 +1248,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { resolvePending, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
+window.__nv = { verifyItem, boardSection, resolvePending, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
