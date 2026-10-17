@@ -94,7 +94,9 @@ const store = {
   set(k, v) { memory.set(k, v); persistAll(); },
 };
 await initStore();
-const DEFAULT_LANGS = 'العربية (مصرية أو فصحى)، الإنجليزية';
+const LANG_OPTIONS = ['العربية المصرية', 'العربية الفصحى', 'العربية الخليجية', 'العربية السودانية', 'الإنجليزية', 'الفرنسية', 'الأوردو', 'الهندية', 'التركية', 'الإسبانية', 'الألمانية'];
+const DEFAULT_LANGS = 'العربية المصرية، العربية الفصحى، الإنجليزية';
+const splitLangs = (s) => s.split(/[،,]/).map((x) => x.trim()).filter(Boolean);
 // #local للتجربة على الماك فقط
 const devRepo = location.hash === '#local' && ['localhost', '127.0.0.1'].includes(location.hostname) ? 'local' : '';
 const settings = () => ({
@@ -781,9 +783,41 @@ for (const [v, label] of VOICES) sel.add(new Option(label, v));
 function fillSettings() {
   const s = settings();
   $('sKey').value = s.key; $('sToken').value = s.token; $('sRepo').value = store.get('repo'); sel.value = s.voice;
-  $('sLangs').value = store.get('langs');
+  renderLangs();
   showStorage();
 }
+// اللغات: أزرار تُفعَّل وتُعطَّل، ولغة أخرى تُضاف من الخانة. تُحفظ نصاً مفصولاً بـ «، ».
+function renderLangs() {
+  const chosen = splitLangs(settings().langs);
+  const all = [...LANG_OPTIONS, ...chosen.filter((l) => !LANG_OPTIONS.includes(l))];
+  const box = $('sLangs');
+  box.replaceChildren(...all.map((lang) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    b.textContent = lang;
+    b.setAttribute('aria-pressed', String(chosen.includes(lang)));
+    b.addEventListener('click', () => {
+      const on = b.getAttribute('aria-pressed') !== 'true';
+      if (!on && selectedLangs().length === 1) return; // لغة واحدة على الأقل
+      b.setAttribute('aria-pressed', String(on));
+      store.set('langs', selectedLangs().join('، '));
+    });
+    return b;
+  }));
+}
+function selectedLangs() {
+  return [...$('sLangs').querySelectorAll('.chip[aria-pressed="true"]')].map((b) => b.textContent);
+}
+function addLang() {
+  const v = $('sLangNew').value.trim();
+  if (!v) return;
+  store.set('langs', [...new Set([...selectedLangs(), ...splitLangs(v)])].join('، '));
+  $('sLangNew').value = '';
+  renderLangs();
+}
+$('sLangAdd').addEventListener('click', addLang);
+$('sLangNew').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addLang(); } });
 function showStorage() {
   const out = $('checkResult');
   const where = [storage.ls && 'localStorage', storage.idb && 'IndexedDB', storage.cache && 'Cache'].filter(Boolean);
@@ -800,12 +834,12 @@ function saveSettings() {
   store.set('token', $('sToken').value.trim());
   store.set('repo', $('sRepo').value.trim());
   store.set('voice', sel.value);
-  store.set('langs', $('sLangs').value.trim());
+  store.set('langs', selectedLangs().join('، '));
 }
 $('settingsBtn').addEventListener('click', () => { fillSettings(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
-for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice', 'sLangs']) $(id).addEventListener('change', saveSettings);
+for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
 $('testBtn').addEventListener('click', async () => {
   saveSettings();
   const out = $('checkResult');

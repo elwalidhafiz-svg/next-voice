@@ -119,6 +119,15 @@
   .row { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
   .primary { background: linear-gradient(135deg, var(--pink), var(--indigo)); border: none; color: #fff; }
   .check { margin-top: 10px; font-size: 13px; min-height: 18px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    background: var(--card); border: 1px solid var(--line); color: var(--muted);
+    padding: 7px 12px; border-radius: 999px; font: 500 13px "IBM Plex Sans Arabic", sans-serif; cursor: pointer;
+  }
+  .chip[aria-pressed="true"] { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--pink), var(--indigo)); }
+  .add-lang { display: flex; gap: 8px; margin-top: 8px; }
+  dialog .add-lang input { direction: rtl; text-align: right; }
+  .add-lang .pill { flex: none; }
 </style>
 </head>
 <body>
@@ -161,8 +170,12 @@
     <input id="sRepo" placeholder="elwalidhafiz-svg/My-Vault" autocomplete="off" spellcheck="false">
     <label for="sVoice">الصوت</label>
     <select id="sVoice"></select>
-    <label for="sLangs">اللغات التي تتكلم بها (مفصولة بفاصلة)</label>
-    <input id="sLangs" placeholder="العربية، الإنجليزية" autocomplete="off" style="direction: rtl; text-align: right;">
+    <label id="sLangsLabel">اللغات التي تتكلم بها</label>
+    <div class="chips" id="sLangs" role="group" aria-labelledby="sLangsLabel"></div>
+    <div class="add-lang">
+      <input id="sLangNew" placeholder="لغة أخرى…" autocomplete="off">
+      <button class="pill" type="button" id="sLangAdd">إضافة</button>
+    </div>
     <div class="check" id="checkResult"></div>
     <div class="row">
       <button class="pill primary" value="save" id="saveBtn">حفظ</button>
