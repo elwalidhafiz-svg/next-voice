@@ -406,9 +406,12 @@ async function runTool(name, args = {}) {
 }
 
 // ردود نيكست الكبير على الأسئلة لا تُرسل على تيليجرام؛ تُقال في بداية المكالمة التالية (heard: no)
+// ما أُعلن في هذه الجلسة لا يُعلن مرة ثانية (الفهرس قد لا يعرف بعد أنه سُمع)
+const announced = new Set();
 function unheardAnswers() {
   return vault.notes
     .filter((n) => n.path.startsWith('Inbox/') && n.text.includes(`kind: ${BIG_KIND}`) && /^heard: no$/m.test(n.text) && /^status: answered$/m.test(n.text))
+    .filter((n) => !announced.has(n.path))
     .sort((a, b) => a.path.localeCompare(b.path))
     .slice(-5)
     .map((n) => ({
@@ -523,6 +526,7 @@ function stopAudio() {
 
 function playPcm24k(b64) {
   if (!audio.ctx) return;
+  call.lastModel = Date.now();
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -565,7 +569,44 @@ function u8ToB64(u8) {
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
   started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0,
+  lastUser: 0, lastModel: 0, news: [], pollTimer: 0, idleTimer: 0,
 };
+
+function markAllHeard(list) {
+  for (const x of list) announced.add(x.path);
+  Promise.allSettled(list.map((x) => markHeard(x.path)))
+    .then((r) => r.forEach((x) => x.status === 'rejected' && console.warn('markHeard', x.reason)));
+}
+
+// ردود تصل أثناء المكالمة: فحص الفهرس كل دقيقتين، والإعلان في أول توقف للكلام
+const NEWS_POLL_MS = 120000;
+async function pollNews() {
+  if (!call.active) return;
+  try { await loadVault(); } catch { return; }
+  const known = new Set(call.news.map((x) => x.path));
+  call.news.push(...unheardAnswers().filter((x) => !known.has(x.path)));
+}
+function announceIfIdle() {
+  const now = Date.now();
+  const idle = audio.sources.size === 0 && now - call.lastUser > 4000 && now - call.lastModel > 2500;
+  if (!call.news.length || !call.session || !idle) return;
+  const list = call.news.splice(0);
+  const body = list.map((x, i) => `${i + 1}) ${x.title}:\n${x.answer}`).join('\n\n');
+  call.session.sendRealtimeInput({
+    text: `(تنبيه من النظام، لا تقرأه حرفياً) وصل الآن ${list.length === 1 ? 'رد' : list.length + ' ردود'} من نيكست الكبير. قل للوليد بجملة قصيرة إنه وصل رد على: ${list.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعه. إن وافق فهذا هو الرد، قله بإيجاز:\n${body}`,
+  });
+  note('tool', '📬 وصل رد من نيكست الكبير');
+  markAllHeard(list);
+}
+function startNewsWatch() {
+  call.pollTimer = setInterval(pollNews, NEWS_POLL_MS);
+  call.idleTimer = setInterval(announceIfIdle, 1000);
+}
+function stopNewsWatch() {
+  clearInterval(call.pollTimer);
+  clearInterval(call.idleTimer);
+  call.news = [];
+}
 
 async function startCall() {
   const s = settings();
@@ -593,8 +634,9 @@ async function startCall() {
     const unheard = unheardAnswers();
     if (unheard.length) {
       call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) ابدأ بإخبار الوليد باختصار أن عنده ${unheard.length === 1 ? 'رداً جديداً' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعها.` });
-      Promise.allSettled(unheard.map((x) => markHeard(x.path))).then((r) => r.forEach((x) => x.status === 'rejected' && console.warn('markHeard', x.reason)));
+      markAllHeard(unheard);
     }
+    startNewsWatch();
     acquireWakeLock();
     ui.mute.hidden = ui.end.hidden = ui.composer.hidden = false;
     ui.orb.classList.remove('idle');
@@ -678,7 +720,7 @@ async function onMessage(m, ref) {
   const sc = m.serverContent;
   if (!sc) return;
   if (sc.interrupted) stopPlayback();
-  if (sc.inputTranscription?.text) say('user', sc.inputTranscription.text);
+  if (sc.inputTranscription?.text) { call.lastUser = Date.now(); say('user', sc.inputTranscription.text); }
   for (const p of sc.modelTurn?.parts || []) {
     if (p.inlineData?.data && p.inlineData.mimeType?.startsWith('audio/')) playPcm24k(p.inlineData.data);
   }
@@ -743,6 +785,7 @@ function onClose(e, ref) {
 
 async function endCall(silent = false) {
   call.ending = true;
+  stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
   const mins = call.started ? (Date.now() - call.started) / 60000 : 0;
   if (mins > 0) addUsage(mins);
   try { call.session?.close(); } catch {}
@@ -819,6 +862,7 @@ ui.composer.addEventListener('submit', (e) => {
   const t = ui.text.value.trim();
   if (!t || !call.session) return;
   note('user', t);
+  call.lastUser = Date.now();
   call.session.sendRealtimeInput({ text: t });
   ui.text.value = '';
 });
@@ -906,4 +950,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet };
+window.__nv = { searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
