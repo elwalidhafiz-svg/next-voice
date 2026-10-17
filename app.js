@@ -19,7 +19,8 @@ const VOICES = [
   ['Leda', 'Leda — نسائي شاب'],
   ['Zephyr', 'Zephyr — نسائي مشرق'],
 ];
-const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md'];
+// Pending Approvals: نسخة تلقائية كل ساعتين بما ينتظر اعتماد الوليد (شيت المحتوى وشيت الفرص)
+const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md', '_System/Pending Approvals.md'];
 const OPEN_LOOPS = '_System/Open Loops.md';
 
 // ---------- تخزين محلي دائم ----------

@@ -30,6 +30,11 @@ STUCK_MIN = 20          # طلب «working» أطول من هذا يُعاد (ا
 MAX_ATTEMPTS = 2        # بعدها يُعلَّم failed ويُبلَّغ
 SYNC_ALERT_AFTER = 3    # فشل مزامنة متتالٍ قبل تنبيه تيليجرام
 STATE = Path.home() / ".local" / "share" / "next-voice" / "state.json"
+APPROVALS_REL = Path("_System") / "Pending Approvals.md"
+APPROVALS_EVERY_MIN = 120          # نسخة «ما ينتظر اعتمادك» كل ساعتين
+APPROVALS_RETRY_MIN = 30           # بعد فشل
+APPROVALS_HOURS = range(8, 23)     # من 8 ص حتى 11 م بتوقيت الرياض
+JOBS_SHEET = "15Jihl4OMeHZNz8HqaZy50teiKXFLaVZyqu098bGHDvU"
 TG_DIR = Path.home() / ".claude" / "channels" / "telegram"
 LAST_BATCH = Path(".next-voice") / "last_batch.json"
 CHANGES_MARK = "---التغييرات---"
@@ -325,20 +330,8 @@ def age_minutes(meta):
     return (datetime.now(timezone.utc) - created).total_seconds() / 60
 
 
-def run_claude(rel, body, requested_at):
-    prompt = f"""أنت نيكست الكبير. وصلك طلب صوتي من الوليد عبر نيكست الصوتي، محفوظ في `{rel}`:
-
-{body.strip()}
-
-- **وقت الطلب: {requested_at} بتوقيت الرياض ({human_when(requested_at)})، والآن: {human_now()}.** قد يكون التنفيذ متأخراً لأن الماك كان مغلقاً: احسب أي تاريخ نسبي (اليوم، بكرة، الأسبوع الجاي) من وقت الطلب لا من الآن، واقرأ البيانات بحالتها الآن.
-- اقرأ CLAUDE.md و`_System/soul.md` و`_System/user.md`. لمصادر واتساب والشيتات اتبع قسم «المصادر» في `_System/Telegram Assistant/CLAUDE.md`.
-- نفّذ الطلب مباشرة دون سؤال؛ الوليد أكّده في المكالمة (قاعدة «تأكيد الفهم» في soul.md لا تنطبق هنا). مسموح دون تأكيد: القراءة والتحليل، وإضافة مهام Microsoft To Do عبر Zapier، وإضافة بنود في `_System/Open Loops.md`، وتعديل ملفات الـ Vault بقواعدها.
-- مهام Microsoft To Do تُضاف إلى القائمة الافتراضية «Tasks» دائماً، إلا إن ذكر الوليد في طلبه قائمة بالاسم. اذكر اسم القائمة في ردك.
-- ممنوع دون تأكيد: إرسال أي رسالة أو إيميل، وتعديل أي شيت، وأي تغيير خارجي آخر. اذكره في آخر ردك تحت «يحتاج تأكيدك:» ولا تنفّذه.
-- لا تعدّل ملف الطلب نفسه؛ السكربت يكتب فيه ردك.
-- ردك النهائي جزءان:
-  1. الرد كما سيصل إليه، ويقول ما فعلتَه بجملة بشرية («✅ أضفتُ مهمة «…» إلى قائمة Tasks»): ممنوع فيه المعرّفات والإيميلات والحسابات وأسماء الملفات والمسارات. **بالعربية الفصحى دائماً** (المصطلحات التقنية فقط بالإنجليزية)، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:»، وكل تاريخ أو وقت فيها بصيغة بشرية كما في soul.md («أمس الجمعة الساعة 5 م»، «بكرة الأحد»)، لا 2026-10-17 ولا 15:10.
-  2. سطر فيه `{CHANGES_MARK}` وحده، ثم كل تغيير أجريته سطراً بتفاصيل تكفي لإلغائه لاحقاً (هنا فقط تُكتب المعرّفات والحسابات؛ هذا الجزء لا يراه الوليد) (الملف والنص المضاف، أو قائمة To Do وعنوان المهمة). إن لم تغيّر شيئاً فاكتب: لا شيء."""
+def claude_print(prompt):
+    """تشغيل Claude على الماك دون واجهة (الوضع التلقائي للصلاحيات) وإرجاع نص الرد."""
     env = dict(os.environ, PATH=f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin")
     proc = subprocess.run(
         ["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "json",
@@ -351,7 +344,25 @@ def run_claude(rel, body, requested_at):
         raise RuntimeError((proc.stderr or proc.stdout or "لا مخرجات")[-400:])
     if data.get("is_error") or not data.get("result"):
         raise RuntimeError(str(data.get("result") or data.get("subtype") or "خطأ غير معروف")[:400])
-    text = data["result"].strip()
+    return data["result"].strip()
+
+
+def run_claude(rel, body, requested_at):
+    prompt = f"""أنت نيكست الكبير. وصلك طلب صوتي من الوليد عبر نيكست الصوتي، محفوظ في `{rel}`:
+
+{body.strip()}
+
+- **وقت الطلب: {requested_at} بتوقيت الرياض ({human_when(requested_at)})، والآن: {human_now()}.** قد يكون التنفيذ متأخراً لأن الماك كان مغلقاً: احسب أي تاريخ نسبي (اليوم، بكرة، الأسبوع الجاي) من وقت الطلب لا من الآن، واقرأ البيانات بحالتها الآن.
+- اقرأ CLAUDE.md و`_System/soul.md` و`_System/user.md`. لمصادر واتساب والشيتات اتبع قسم «المصادر» في `_System/Telegram Assistant/CLAUDE.md`.
+- نفّذ الطلب مباشرة دون سؤال؛ الوليد أكّده في المكالمة (قاعدة «تأكيد الفهم» في soul.md لا تنطبق هنا). مسموح دون تأكيد: القراءة والتحليل، وإضافة مهام Microsoft To Do عبر Zapier، وإضافة بنود في `_System/Open Loops.md`، وتعديل ملفات الـ Vault بقواعدها.
+- مهام Microsoft To Do تُضاف إلى القائمة الافتراضية «Tasks» دائماً، إلا إن ذكر الوليد في طلبه قائمة بالاسم. اذكر اسم القائمة في ردك.
+- استثناء وحيد في الشيتات: إن كان الطلب اعتماد فكرة محتوى، فغيّر «حالة النشر» لذلك الصف في تبويب «نظام إدارة البراندينج» من `فكرة جديدة - بانتظار الموافقة` إلى `معتمدة` فقط (تحقق أن الصف بهذه الحالة فعلاً). لا تغيّر أي حالة أخرى أبداً، ولا تضع `معتمد للنشر`، ولا تعتمد مسودة أو تصميماً أو إيميلاً؛ هذه تُعتمد في جلساتها.
+- ممنوع دون تأكيد: إرسال أي رسالة أو إيميل، وتعديل أي شيت، وأي تغيير خارجي آخر. اذكره في آخر ردك تحت «يحتاج تأكيدك:» ولا تنفّذه.
+- لا تعدّل ملف الطلب نفسه؛ السكربت يكتب فيه ردك.
+- ردك النهائي جزءان:
+  1. الرد كما سيصل إليه، ويقول ما فعلتَه بجملة بشرية («✅ أضفتُ مهمة «…» إلى قائمة Tasks»): ممنوع فيه المعرّفات والإيميلات والحسابات وأسماء الملفات والمسارات. **بالعربية الفصحى دائماً** (المصطلحات التقنية فقط بالإنجليزية)، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:»، وكل تاريخ أو وقت فيها بصيغة بشرية كما في soul.md («أمس الجمعة الساعة 5 م»، «بكرة الأحد»)، لا 2026-10-17 ولا 15:10.
+  2. سطر فيه `{CHANGES_MARK}` وحده، ثم كل تغيير أجريته سطراً بتفاصيل تكفي لإلغائه لاحقاً (هنا فقط تُكتب المعرّفات والحسابات؛ هذا الجزء لا يراه الوليد) (الملف والنص المضاف، أو قائمة To Do وعنوان المهمة). إن لم تغيّر شيئاً فاكتب: لا شيء."""
+    text = claude_print(prompt)
     answer, _, changes = text.partition(CHANGES_MARK)
     return answer.strip(), (changes.strip() or "لا شيء")
 
@@ -487,6 +498,52 @@ def notify_pending():
     log("أُبلغ على تيليجرام:", len(items))
 
 
+def snapshot_approvals(force=False):
+    """كل ساعتين نهاراً: نيكست الكبير يقرأ الشيتين ويكتب ما ينتظر اعتماد الوليد في _System/Pending Approvals.md."""
+    now = datetime.now(RIYADH)
+    state = load_state()
+    if now.hour not in APPROVALS_HOURS and not force:
+        return
+    last = state.get("approvals_attempt")
+    wait = APPROVALS_RETRY_MIN if state.get("approvals_failed") else APPROVALS_EVERY_MIN
+    if last and not force and (now - datetime.fromisoformat(last)).total_seconds() < wait * 60:
+        return
+    state["approvals_attempt"] = now.isoformat()
+    save_state(state)
+    prompt = f"""اقرأ شيتين بأداة Google Sheets (قراءة فقط، لا تكتب في أي شيت ولا ملف):
+1. شيت المحتوى «My Social Media Calendar»، تبويب «نظام إدارة البراندينج» (ابحث عنه في Drive بالاسم إن لزم). من عمود «حالة النشر» خذ الصفوف بهذه الحالات حرفياً: `فكرة جديدة - بانتظار الموافقة`، `مسودة جاهزة - بانتظار المراجعة`، `التصميم جاهز - بانتظار المراجعة`، وصفوف `النص معتمد` التي منصتها «انستجرام» (كاروسيلات يصمّمها الوليد بنفسه في Claude Design).
+2. شيت البحث عن فرص جديدة {JOBS_SHEET}: تبويب «جهات الاتصال» (عمود L حالة التواصل = `بانتظار الموافقة`) وتبويب «الفرص» (عمود M الحالة = `بانتظار الموافقة`). لا تكرر الشخص نفسه.
+
+أخرج Markdown فقط، بلا مقدمة ولا خاتمة، بهذا الشكل حرفياً (القسم الفارغ يكتب تحته «- لا شيء»):
+## أفكار محتوى جديدة (<العدد>) — تُعتمد بالصوت
+- صف <رقم الصف في الشيت>: <الفكرة بجملة قصيرة> — <السلسلة> · <المنصة>
+## مسودات تنتظر مراجعتك (<العدد>) — تُعتمد في جلسة «مرحلة الكتابة»
+- <الفكرة بجملة قصيرة> — <المنصة>
+## تصاميم تنتظر مراجعتك (<العدد>) — تُعتمد من الشيت بعد رؤيتها
+- <الفكرة بجملة قصيرة> — <المنصة>
+## كاروسيلات تنتظر تصميمك (<العدد>) — تصمّمها في Claude Design من برومبت المحتوى
+- <الفكرة بجملة قصيرة> — <السلسلة>
+## إيميلات تواصل تنتظر موافقتك (<العدد>) — تُعتمد في جلسة «مهمة التواصل»
+- <الاسم> — <المنصب> — <الشركة> — <أولى أو متابعة>
+
+بالعربية، بلا روابط ولا إيميلات ولا معرّفات غير رقم الصف."""
+    try:
+        body = claude_print(prompt)
+        if "## أفكار محتوى جديدة" not in body:
+            raise RuntimeError("شكل غير متوقع: " + body[:200])
+    except Exception as e:  # noqa: BLE001 — يُعاد بعد APPROVALS_RETRY_MIN
+        state = load_state(); state["approvals_failed"] = True; save_state(state)
+        log("فشل تحديث «ما ينتظر اعتمادك»:", e)
+        return
+    head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
+            f"# ما ينتظر اعتمادي\n\nملف تلقائي يكتبه سكربت نيكست الصوتي كل ساعتين نهاراً من شيت المحتوى وشيت البحث عن فرص جديدة. لا تعدّله يدوياً.\n"
+            f"آخر تحديث: {human_day(now.date(), now.date())} {human_time(now)}.\n\n")
+    (VAULT / APPROVALS_REL).write_text(head + body.strip() + "\n", encoding="utf-8")
+    state = load_state(); state["approvals_failed"] = False; save_state(state)
+    publish("voice: pending approvals snapshot")
+    log("حُدّث «ما ينتظر اعتمادك».")
+
+
 def recover_stuck():
     """طلب بقي «working» لأن التشغيل انقطع أثناء تنفيذه (غطاء الماك أُغلق مثلاً): يعود pending، أو failed بعد MAX_ATTEMPTS."""
     changed = False
@@ -513,10 +570,14 @@ def recover_stuck():
 
 def process_big_requests():
     recover_stuck()
+    acted = False
     for path, meta, body in big_requests("pending"):
         item = execute(path, meta, body)
+        acted = acted or is_action(item)
         log("فعل — سيُبلَّغ:" if is_action(item) else "سؤال — يُسمع في المكالمة التالية:", path.name)
     notify_pending()
+    if acted:  # قد يكون اعتمد فكرة: حدّث النسخة فوراً
+        snapshot_approvals(force=True)
 
 
 def main():
@@ -538,6 +599,10 @@ def main():
             process_big_requests()
         except Exception as e:  # noqa: BLE001
             log("خطأ في طلبات نيكست الكبير:", e)
+        try:
+            snapshot_approvals()
+        except Exception as e:  # noqa: BLE001
+            log("خطأ في «ما ينتظر اعتمادك»:", e)
     return status
 
 
