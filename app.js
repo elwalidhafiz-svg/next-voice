@@ -378,6 +378,29 @@ function openLoopsText() {
   return t.slice(a === -1 ? 0 : a, b === -1 ? undefined : b).trim();
 }
 
+// ما انتهى خلال اليوم ولم يُغلق بعد في Open Loops: ما قاله الوليد «خلص» (يُحفظ على الجهاز لليوم)،
+// وما يرى ملخص واتساب أنه أُنجز (يُسأل عنه قبل إغلاقه).
+function doneToday() {
+  const today = riyadhNow().date;
+  try { const d = JSON.parse(store.get('done.today') || '{}'); return d.date === today ? d.items : []; } catch { return []; }
+}
+function addDoneToday(item) {
+  store.set('done.today', JSON.stringify({ date: riyadhNow().date, items: [...doneToday(), item] }));
+}
+function whatsappDone() {
+  const n = vault.byPath.get('_System/WhatsApp Today.md');
+  const sec = n ? (n.text.split('## يبدو أنه أُنجز اليوم')[1] || '').split('\n## ')[0].trim() : '';
+  return sec && !/^- لا شيء/.test(sec) ? sec : '';
+}
+function openLoopsForVoice() {
+  const parts = [openLoopsText()];
+  const mine = doneToday();
+  if (mine.length) parts.push(`## قال الوليد إنه انتهى اليوم — لا تذكره كمهمة (إغلاقه في Open Loops جارٍ)\n${mine.map((x) => '- ' + x).join('\n')}`);
+  const wa = whatsappDone();
+  if (wa) parts.push(`## يبدو من واتساب أنه أُنجز اليوم — لا تذكره كمهمة، واسأله مرة: «يبدو إنه خلص، أقفله؟»\n${wa}`);
+  return parts.join('\n\n');
+}
+
 function b64utf8(s) {
   const bytes = new TextEncoder().encode(s);
   let bin = '';
@@ -469,6 +492,18 @@ const TOOLS = [{
       },
     },
     {
+      name: 'mark_done',
+      description: 'حين يقول الوليد إن بنداً من البنود المفتوحة انتهى («خلصت…»، «سحر سلّمت»)، أو يوافق على إغلاق ما يبدو من واتساب أنه أُنجز: أكّد البند بجملة، ثم استدعها. يتوقف ذكره فوراً، ويغلقه نيكست الكبير في Open Loops.',
+      parameters: {
+        type: 'object',
+        properties: {
+          item: { type: 'string', description: 'البند كما هو في Open Loops، مختصراً بما يكفي لتمييزه' },
+          evidence: { type: 'string', description: 'لماذا انتهى (كلامه، أو دليل واتساب)' },
+        },
+        required: ['item'],
+      },
+    },
+    {
       name: 'big_next_status',
       description: 'حالة طلبات نيكست الكبير الأخيرة وردوده (من آخر مزامنة للـ Vault).',
     },
@@ -488,7 +523,12 @@ async function runTool(name, args = {}) {
       return { path: n.path, text: n.text.slice(0, MAX_NOTE), truncated: n.text.length > MAX_NOTE };
     }
     case 'open_loops':
-      return { text: openLoopsText().slice(0, 14000) };
+      return { text: openLoopsForVoice().slice(0, 16000) };
+    case 'mark_done': {
+      addDoneToday(args.item);
+      const r = await addToInbox({ title: `إغلاق: ${args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)`, kind: BIG_KIND });
+      return { ok: true, path: r, note: 'لن يُذكر بعد الآن، ونيكست الكبير يغلقه في Open Loops خلال دقائق.' };
+    }
     case 'add_to_inbox':
       return { ok: true, path: await addToInbox(args) };
     case 'ask_big_next':
@@ -843,6 +883,7 @@ function toolLabel(name, args = {}) {
     case 'search_vault': return `🔎 يبحث: ${args.query || ''}`;
     case 'read_note': return `📄 يقرأ: ${args.name || ''}`;
     case 'open_loops': return '📋 يقرأ البنود المفتوحة';
+    case 'mark_done': return `✔️ انتهى: ${args.item || ''}`;
     case 'add_to_inbox': return `✍️ يسجّل: ${args.title || ''}`;
     case 'ask_big_next': return `📨 إلى نيكست الكبير: ${args.title || ''}`;
     case 'big_next_status': return '📬 يراجع ردود نيكست الكبير';
@@ -1105,4 +1146,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
+window.__nv = { openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
