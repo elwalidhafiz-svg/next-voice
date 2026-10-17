@@ -3,9 +3,11 @@
 
 1. يبني فهرساً للبحث في .next-voice/index.json (يقرؤه تطبيق الجوال).
 2. إن كان الـ Vault مستودع git له remote: commit ثم pull --rebase ثم push.
-3. «نيكست الكبير»: طلبات صوتية في Inbox/ بنوع BIG_KIND وحالة pending
-   - حديثة (≤ STALE_MIN): يشغّل Claude على الماك، يكتب الرد في الملف، ويرسله على تيليجرام.
-   - قديمة (الماك كان مغلقاً): يسأل الوليد على تيليجرام أولاً، وينفّذها نيكست تيليجرام إن وافق.
+3. «نيكست الكبير»: طلبات صوتية في Inbox/ بنوع BIG_KIND وحالة pending — تُنفَّذ كلها بـ Claude على الماك
+   مهما تأخر فتحه، ويُكتب الرد وما تغيّر في ملف الطلب.
+   - حديثة (≤ STALE_MIN): يُرسل ردها على تيليجرام فور انتهائها.
+   - متأخرة (الماك كان مغلقاً): رسالة واحدة تجمعها بعد تنفيذها كلها.
+   الإلغاء: يقول الوليد لنيكست تيليجرام «الغِ <رقم>»، وأرقام آخر رسالة في .next-voice/last_batch.json.
 
 الاستخدام:
   python3 next_voice_sync.py                 # فهرس + مزامنة + الطلبات
@@ -25,6 +27,8 @@ BIG_KIND = "سؤال لنيكست الكبير"
 STALE_MIN = 60
 CLAUDE_TIMEOUT = 15 * 60
 TG_DIR = Path.home() / ".claude" / "channels" / "telegram"
+LAST_BATCH = Path(".next-voice") / "last_batch.json"
+CHANGES_MARK = "---التغييرات---"
 WHATSAPP = Path.home() / "Library" / "Group Containers" / "group.net.whatsapp.WhatsApp.shared"
 INDEX_REL = Path(".next-voice") / "index.json"
 EXCLUDE_PREFIXES = (
@@ -184,16 +188,19 @@ def age_minutes(meta):
     return (datetime.now(timezone.utc) - created).total_seconds() / 60
 
 
-def run_claude(rel, body):
+def run_claude(rel, body, requested_at):
     prompt = f"""أنت نيكست الكبير. وصلك طلب صوتي من الوليد عبر نيكست الصوتي، محفوظ في `{rel}`:
 
 {body.strip()}
 
+- **وقت الطلب: {requested_at} بتوقيت الرياض.** قد يكون التنفيذ متأخراً لأن الماك كان مغلقاً: احسب أي تاريخ نسبي (اليوم، بكرة، الأسبوع الجاي) من وقت الطلب لا من الآن، واقرأ البيانات بحالتها الآن.
 - اقرأ CLAUDE.md و`_System/soul.md` و`_System/user.md`. لمصادر واتساب والشيتات اتبع قسم «المصادر» في `_System/Telegram Assistant/CLAUDE.md`.
-- نفّذ الطلب. مسموح دون تأكيد: القراءة والتحليل، وإضافة مهام Microsoft To Do عبر Zapier، وإضافة بنود في `_System/Open Loops.md`، وتعديل ملفات الـ Vault بقواعدها.
+- نفّذ الطلب مباشرة دون سؤال. مسموح دون تأكيد: القراءة والتحليل، وإضافة مهام Microsoft To Do عبر Zapier، وإضافة بنود في `_System/Open Loops.md`، وتعديل ملفات الـ Vault بقواعدها.
 - ممنوع دون تأكيد: إرسال أي رسالة أو إيميل، وتعديل أي شيت، وأي تغيير خارجي آخر. اذكره في آخر ردك تحت «يحتاج تأكيدك:» ولا تنفّذه.
 - لا تعدّل ملف الطلب نفسه؛ السكربت يكتب فيه ردك.
-- ردك النهائي هو رسالة تيليجرام كما ستصل: فصحى، مختصرة، نقاط، أقل من 3000 حرف، بلا عناوين Markdown ولا جداول. ابدأه بـ «🎙️ ردّ على طلبك الصوتي:»."""
+- ردك النهائي جزءان:
+  1. رسالة تيليجرام كما ستصل: فصحى، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:».
+  2. سطر فيه `{CHANGES_MARK}` وحده، ثم كل تغيير أجريته سطراً بتفاصيل تكفي لإلغائه لاحقاً (الملف والنص المضاف، أو قائمة To Do وعنوان المهمة). إن لم تغيّر شيئاً فاكتب: لا شيء."""
     env = dict(os.environ, PATH=f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin")
     proc = subprocess.run(
         ["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "json",
@@ -206,7 +213,9 @@ def run_claude(rel, body):
         raise RuntimeError((proc.stderr or proc.stdout or "لا مخرجات")[-400:])
     if data.get("is_error") or not data.get("result"):
         raise RuntimeError(str(data.get("result") or data.get("subtype") or "خطأ غير معروف")[:400])
-    return data["result"].strip()
+    text = data["result"].strip()
+    answer, _, changes = text.partition(CHANGES_MARK)
+    return answer.strip(), (changes.strip() or "لا شيء")
 
 
 def publish(message):
@@ -218,44 +227,81 @@ def publish(message):
     git("push", "-q")
 
 
-def process_big_requests():
-    # الطلبات القديمة: الماك كان مغلقاً — نسأل أولاً، وينفّذها نيكست تيليجرام إن وافق
-    for path, meta, body in big_requests("pending"):
-        if age_minutes(meta) <= STALE_MIN:
-            continue
-        tg_send(
-            f"🎙️ طلبتَ في مكالمة نيكست الصوتي ({meta.get('created', '؟')}):\n\n{body.strip()[:1500]}\n\n"
-            f"لم يُنفَّذ لأن الماك كان مغلقاً. هل ما زلت تريده؟ ردّ «نعم» أو «لا».\n(الملف: {path.name})"
-        )
-        set_fields(path, status="awaiting_confirmation")
-        log("سُئل عن طلب قديم:", path.name)
-    publish("voice: stale requests")
+def no_changes(changes):
+    return changes.strip().rstrip(".") in ("لا شيء", "")
 
-    # طلب حديث واحد في كل دورة
-    fresh = [r for r in big_requests("pending") if age_minutes(r[1]) <= STALE_MIN]
-    if not fresh:
-        return
-    path, meta, body = fresh[0]
+
+def save_batch(items):
+    """أرقام آخر رسالة ← ملفاتها، ليفهم نيكست تيليجرام «الغِ <رقم>»."""
+    out = VAULT / LAST_BATCH
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "sent": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "items": [{"n": i + 1, "file": it["rel"], "title": it["title"]} for i, it in enumerate(items)],
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def execute(path, meta, body):
     rel = path.relative_to(VAULT).as_posix()
+    title = (re.search(r"^# (.+)$", body, re.M) or [None, path.stem])[1]
+    item = {"rel": rel, "title": title, "requested": meta.get("created", "؟"), "age": age_minutes(meta)}
     set_fields(path, status="working")
     publish("voice: working on request")
     log("ينفّذ:", path.name)
     try:
-        answer = run_claude(rel, body)
+        item["answer"], item["changes"] = run_claude(rel, body, item["requested"])
     except Exception as e:  # noqa: BLE001 — أي فشل يُبلَّغ للوليد ولا يوقف المزامنة
         set_fields(path, status="failed")
         with path.open("a", encoding="utf-8") as f:
             f.write(f"\n## فشل التنفيذ\n{e}\n")
-        publish("voice: request failed")
-        tg_send(f"⚠️ لم أستطع تنفيذ طلبك الصوتي ({path.name}): {str(e)[:300]}")
+        item["error"] = str(e)[:300]
         log("فشل:", e)
+    else:
+        set_fields(path, status="answered", answered=datetime.now().strftime("%Y-%m-%d %H:%M"))
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"\n## ردّ نيكست الكبير\n{item['answer']}\n\n## ما غيّرته\n{item['changes']}\n")
+    publish("voice: request done")
+    return item
+
+
+def delay_text(minutes):
+    h = int(minutes // 60)
+    return f"بعد {h // 24} يوم" if h >= 48 else f"بعد {h} ساعة" if h >= 1 else "فوراً"
+
+
+def render(item, n=None):
+    head = f"{n}) " if n else ""
+    if "error" in item:
+        return f"{head}⚠️ {item['title']} — لم يُنفَّذ: {item['error']}"
+    lines = [f"{head}🎙️ {item['title']} (طلبتَه {item['requested']}، نُفّذ {delay_text(item['age'])})", item["answer"][:1800 if n else 2500]]
+    if not no_changes(item["changes"]):
+        lines.append("ما غيّرته:\n" + item["changes"][:600])
+    return "\n".join(lines)
+
+
+def process_big_requests():
+    pending = big_requests("pending")
+    if not pending:
         return
-    set_fields(path, status="answered", answered=datetime.now().strftime("%Y-%m-%d %H:%M"))
-    with path.open("a", encoding="utf-8") as f:
-        f.write(f"\n## ردّ نيكست الكبير\n{answer}\n")
-    publish("voice: request answered")
-    tg_send(answer)
-    log("أُرسل الرد:", path.name)
+    delayed = []
+    for path, meta, body in pending:
+        item = execute(path, meta, body)
+        if item["age"] <= STALE_MIN:
+            save_batch([item])
+            undo = "" if "error" in item or no_changes(item.get("changes", "")) else "\n\nللإلغاء: «الغِها»."
+            tg_send(render(item) + undo)
+            log("أُرسل الرد:", path.name)
+        else:
+            delayed.append(item)
+    if delayed:
+        # الماك كان مغلقاً: رسالة واحدة بكل ما نُفّذ
+        save_batch(delayed)
+        publish("voice: delayed batch")
+        parts = [f"🎙️ فتحتَ الماك، فنفّذتُ طلباتك الصوتية ({len(delayed)}):"]
+        parts += [render(it, i + 1) for i, it in enumerate(delayed)]
+        parts.append("لإلغاء أيٍّ منها قل: «الغِ <رقمه>».")
+        tg_send("\n\n".join(parts))
+        log("أُرسل ملخص المتأخر:", len(delayed))
 
 
 def main():
