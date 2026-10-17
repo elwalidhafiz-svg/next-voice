@@ -464,12 +464,13 @@ function riyadhNow() {
 
 const BIG_KIND = 'سؤال لنيكست الكبير';
 
-async function addToInbox({ title, content, kind = 'ملاحظة' }) {
+async function addToInbox({ title, content, kind = 'ملاحظة', type = 'سؤال' }) {
   const { date, time } = riyadhNow();
   const safe = (title || 'ملاحظة صوتية').replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
   const path = `Inbox/${date} ${time.replace(':', '')} صوتي - ${safe}.md`;
-  // طلبات نيكست الكبير يلتقطها سكربت الماك بحالة pending (انظر next_voice_sync.py)
-  const extra = kind === BIG_KIND ? `status: pending\ncreated_utc: ${new Date().toISOString()}\n` : '';
+  // طلبات نيكست الكبير يلتقطها سكربت الماك بحالة pending (انظر next_voice_sync.py).
+  // type: فعل = أكّده الوليد بصوته (مرّ بالتأكيد الإلزامي)؛ غيره يُنفَّذ قراءةً فقط.
+  const extra = kind === BIG_KIND ? `type: ${type === 'فعل' ? 'فعل' : 'سؤال'}\nstatus: pending\ncreated_utc: ${new Date().toISOString()}\n` : '';
   const body = `---\nsource: نيكست الصوتي\nkind: ${kind}\ncreated: ${date} ${time}\n${extra}---\n# ${safe}\n\n${content}\n`;
   if (settings().repo === 'local') {
     console.info('[local] add_to_inbox', path, body);
@@ -549,6 +550,11 @@ const TOOLS = [{
       },
     },
     {
+      name: 'answers_heard',
+      // بلا parameters: Gemini يرفض كائناً بخصائص فارغة
+      description: 'استدعها بعد أن تقرأ على الوليد ردود نيكست الكبير التي أُعلنت له في هذه المكالمة، أو إن قال صراحة إنه لا يريد سماعها أبداً. لا تستدعها إن قال «بعدين» أو لم يرد؛ تبقى لتُذكر في المكالمة التالية.',
+    },
+    {
       name: 'big_next_status',
       description: 'حالة طلبات نيكست الكبير الأخيرة وردوده (من آخر مزامنة للـ Vault).',
     },
@@ -598,7 +604,7 @@ async function runTool(name, args = {}, confirmed = false) {
       return { text: openLoopsForVoice().slice(0, 16000) };
     case 'mark_done': {
       addDoneToday(args.item);
-      const r = await addToInbox({ title: `إغلاق: ${args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)`, kind: BIG_KIND });
+      const r = await addToInbox({ title: `إغلاق: ${args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)`, kind: BIG_KIND, type: 'فعل' });
       return { ok: true, path: r, note: 'لن يُذكر بعد الآن، ونيكست الكبير يغلقه في Open Loops خلال دقائق.' };
     }
     case 'add_to_inbox':
@@ -606,9 +612,14 @@ async function runTool(name, args = {}, confirmed = false) {
     case 'ask_big_next':
       return {
         ok: true,
-        path: await addToInbox({ title: args.title, content: args.request, kind: BIG_KIND }),
+        path: await addToInbox({ title: args.title, content: args.request, kind: BIG_KIND, type: args.type === 'سؤال' ? 'سؤال' : 'فعل' }), // غير «سؤال» لا يصل هنا إلا بعد التأكيد (GATED)
         note: 'أُرسل. إن كان الماك مفتوحاً يصل الرد على تيليجرام خلال دقائق، وإلا يُنفَّذ فور فتح الماك ويصل ملخص بما فُعل، ويستطيع الوليد إلغاءه من تيليجرام.',
       };
+    case 'answers_heard': {
+      const list = call.offered.splice(0);
+      markAllHeard(list);
+      return { ok: true, count: list.length };
+    }
     case 'big_next_status': {
       const items = vault.notes
         .filter((n) => n.path.startsWith('Inbox/') && n.text.includes(`kind: ${BIG_KIND}`))
@@ -790,9 +801,14 @@ function u8ToB64(u8) {
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
   started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null,
-  lastUser: 0, lastModel: 0, news: [], pollTimer: 0, idleTimer: 0,
+  lastUser: 0, lastModel: 0, news: [], offered: [], pollTimer: 0, idleTimer: 0,
 };
 
+// أُعلن في هذه المكالمة ولم يُسمع بعد: لا يُعلن ثانيةً فيها، ويبقى heard: no حتى answers_heard
+function offer(list) {
+  for (const x of list) announced.add(x.path);
+  call.offered.push(...list);
+}
 function markAllHeard(list) {
   for (const x of list) announced.add(x.path);
   Promise.allSettled(list.map((x) => markHeard(x.path)))
@@ -807,7 +823,7 @@ async function pollNews() {
   const known = new Set(call.news.map((x) => x.path));
   call.news.push(...unheardAnswers().filter((x) => !known.has(x.path)));
 }
-const YES = /(^|[\s،,.!؟?])(أيوه|ايوه|أيوا|ايوا|أيوة|ايوة|آه|اه|أه|ايه|إيه|نعم|تمام|صح|صحيح|أكيد|اكيد|ماشي|أوكي|اوكي|يلا|بالظبط|بالضبط|ok|okay|yes|yeah|yep|sure)($|[\s،,.!؟?])/i;
+const YES = /(^|[\s،,.!؟?])(أيوه|ايوه|أيوا|ايوا|أيوة|ايوة|آه|اه|أه|نعم|تمام|صح|صحيح|أكيد|اكيد|ماشي|أوكي|اوكي|يلا|بالظبط|بالضبط|ok|okay|yes|yeah|yep|sure)($|[\s،,.!؟?])/i;
 const NO = /(^|[\s،,.!؟?])(لا|لأ|لاء|مش|غلط|استنى|استني|الغي|ألغي|بلاش|no|nope|cancel|wait)($|[\s،,.!؟?])/i;
 async function resolvePending() {
   const pend = call.pending;
@@ -837,10 +853,10 @@ function announceIfIdle() {
   const list = call.news.splice(0);
   const body = list.map((x, i) => `${i + 1}) ${x.title}:\n${x.answer}`).join('\n\n');
   call.session.sendRealtimeInput({
-    text: `(تنبيه من النظام، لا تقرأه حرفياً) وصل الآن ${list.length === 1 ? 'رد' : list.length + ' ردود'} من نيكست الكبير. قل للوليد بجملة قصيرة إنه وصل رد على: ${list.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعه. إن وافق فهذا هو الرد، قله بإيجاز:\n${body}`,
+    text: `(تنبيه من النظام، لا تقرأه حرفياً) وصل الآن ${list.length === 1 ? 'رد' : list.length + ' ردود'} من نيكست الكبير. قل للوليد بجملة قصيرة إنه وصل رد على: ${list.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعه. إن وافق فهذا هو الرد، قله بإيجاز ثم استدعِ answers_heard (وكذلك إن رفض سماعه أصلاً؛ لا إن قال «بعدين»):\n${body}`,
   });
   note('tool', '📬 وصل رد من نيكست الكبير');
-  markAllHeard(list);
+  offer(list);
 }
 function startNewsWatch() {
   call.pollTimer = setInterval(pollNews, NEWS_POLL_MS);
@@ -878,8 +894,8 @@ async function startCall() {
     call.started = Date.now();
     const unheard = unheardAnswers();
     if (unheard.length) {
-      call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) ابدأ بإخبار الوليد باختصار أن عنده ${unheard.length === 1 ? 'رداً جديداً' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعها.` });
-      markAllHeard(unheard);
+      call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) ابدأ بإخبار الوليد باختصار أن عنده ${unheard.length === 1 ? 'رداً جديداً' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعها. بعد أن تقرأها عليه، أو إن رفض سماعها أصلاً، استدعِ answers_heard.` });
+      offer(unheard);
     }
     startNewsWatch();
     acquireWakeLock();
@@ -987,6 +1003,7 @@ function toolLabel(name, args = {}) {
     case 'add_to_inbox': return `✍️ يسجّل: ${args.title || ''}`;
     case 'ask_big_next': return `📨 إلى نيكست الكبير: ${args.title || ''}`;
     case 'big_next_status': return '📬 يراجع ردود نيكست الكبير';
+    case 'answers_heard': return '👂 سمع ردود نيكست الكبير';
     default: return name;
   }
 }
@@ -1038,6 +1055,8 @@ async function endCall(silent = false) {
   call.ending = true;
   stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
   call.pending = null; // فعل لم يُؤكَّد لا يُنفَّذ
+  for (const x of call.offered) announced.delete(x.path); // ما أُعلن ولم يُقرأ يبقى heard: no ويُذكر في المكالمة التالية
+  call.offered = [];
   const mins = call.started ? (Date.now() - call.started) / 60000 : 0;
   if (mins > 0) addUsage(mins);
   try { call.session?.close(); } catch {}
