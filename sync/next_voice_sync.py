@@ -248,7 +248,7 @@ def run_claude(rel, body, requested_at):
 - ممنوع دون تأكيد: إرسال أي رسالة أو إيميل، وتعديل أي شيت، وأي تغيير خارجي آخر. اذكره في آخر ردك تحت «يحتاج تأكيدك:» ولا تنفّذه.
 - لا تعدّل ملف الطلب نفسه؛ السكربت يكتب فيه ردك.
 - ردك النهائي جزءان:
-  1. رسالة تيليجرام كما ستصل: فصحى، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:»، وكل تاريخ أو وقت فيها بصيغة بشرية كما في soul.md («أمس الجمعة الساعة 5 م»، «بكرة الأحد»)، لا 2026-10-17 ولا 15:10.
+  1. الرد كما سيصل إليه: **بالعربية الفصحى دائماً** (المصطلحات التقنية فقط بالإنجليزية)، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:»، وكل تاريخ أو وقت فيها بصيغة بشرية كما في soul.md («أمس الجمعة الساعة 5 م»، «بكرة الأحد»)، لا 2026-10-17 ولا 15:10.
   2. سطر فيه `{CHANGES_MARK}` وحده، ثم كل تغيير أجريته سطراً بتفاصيل تكفي لإلغائه لاحقاً (الملف والنص المضاف، أو قائمة To Do وعنوان المهمة). إن لم تغيّر شيئاً فاكتب: لا شيء."""
     env = dict(os.environ, PATH=f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin")
     proc = subprocess.run(
@@ -278,6 +278,19 @@ def publish(message):
 
 def no_changes(changes):
     return changes.strip().rstrip(".") in ("لا شيء", "")
+
+
+def needs_confirmation(answer):
+    """هل في الرد بند «يحتاج تأكيدك:» غير فارغ؟"""
+    _, found, rest = answer.partition("يحتاج تأكيدك:")
+    return bool(found) and not rest.strip().startswith(("لا شيء", "لا يوجد"))
+
+
+def is_action(item):
+    """تيليجرام فقط لما فيه فعل: تغيير نُفّذ، أو تغيير ينتظر تأكيده، أو فشل. الأسئلة تُسمع في المكالمة التالية."""
+    if "error" in item:
+        return True
+    return not no_changes(item.get("changes", "")) or needs_confirmation(item.get("answer", ""))
 
 
 def save_batch(items):
@@ -341,25 +354,31 @@ def process_big_requests():
     pending = big_requests("pending")
     if not pending:
         return
-    delayed = []
+    actions = []
     for path, meta, body in pending:
         item = execute(path, meta, body)
+        if not is_action(item):
+            # سؤال فقط: الرد في الملف، ونيكست الصوتي يخبره به في المكالمة التالية
+            set_fields(path, heard="no")
+            log("سؤال — يُسمع في المكالمة التالية:", path.name)
+            continue
         if item["age"] <= STALE_MIN:
             save_batch([item])
             undo = "" if "error" in item or no_changes(item.get("changes", "")) else "\n\nللإلغاء: «الغِها»."
             tg_send(render(item) + undo)
             log("أُرسل الرد:", path.name)
         else:
-            delayed.append(item)
-    if delayed:
-        # الماك كان مغلقاً: رسالة واحدة بكل ما نُفّذ
-        save_batch(delayed)
+            actions.append(item)
+    publish("voice: requests processed")
+    if actions:
+        # الماك كان مغلقاً: رسالة واحدة بكل ما نُفّذ من أفعال
+        save_batch(actions)
         publish("voice: delayed batch")
-        parts = [f"🎙️ فتحتَ الماك، فنفّذتُ طلباتك الصوتية ({len(delayed)}):"]
-        parts += [render(it, i + 1) for i, it in enumerate(delayed)]
+        parts = [f"🎙️ فتحتَ الماك، فنفّذتُ ما طلبته صوتياً ({len(actions)}):"]
+        parts += [render(it, i + 1) for i, it in enumerate(actions)]
         parts.append("لإلغاء أيٍّ منها قل: «الغِ <رقمه>».")
         tg_send("\n\n".join(parts))
-        log("أُرسل ملخص المتأخر:", len(delayed))
+        log("أُرسل ملخص المتأخر:", len(actions))
 
 
 def main():

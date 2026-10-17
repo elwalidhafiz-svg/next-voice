@@ -171,6 +171,16 @@ function indexNotes(notes) {
   vault.byPath = new Map(vault.notes.map((n) => [n.path, n]));
 }
 
+// الكتابة في GitHub قد ترفض بـ 409 إن رفع الماك في اللحظة نفسها؛ نعيد المحاولة
+async function ghWrite(fn, tries = 4) {
+  for (let i = 1; ; i++) {
+    try { return await fn(); } catch (e) {
+      if (i >= tries || !/GitHub 409/.test(e.message)) throw e;
+      await new Promise((r) => setTimeout(r, 700 * i));
+    }
+  }
+}
+
 async function gh(path, opts = {}) {
   const { token, repo } = settings();
   const res = await fetch(`https://api.github.com/repos/${repo}/${path}`, {
@@ -288,11 +298,11 @@ async function addToInbox({ title, content, kind = 'ملاحظة' }) {
   if (settings().repo === 'local') {
     console.info('[local] add_to_inbox', path, body);
   } else {
-    await gh(`contents/${path.split('/').map(encodeURIComponent).join('/')}`, {
+    await ghWrite(() => gh(`contents/${path.split('/').map(encodeURIComponent).join('/')}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: `voice: ${safe}`, content: b64utf8(body) }),
-    });
+    }));
   }
   indexNotes([...vault.notes, { path, title: path.split('/').pop().replace(/\.md$/, ''), aliases: [], type: 'inbox', text: body }]);
   return path;
@@ -395,6 +405,34 @@ async function runTool(name, args = {}) {
   }
 }
 
+// ردود نيكست الكبير على الأسئلة لا تُرسل على تيليجرام؛ تُقال في بداية المكالمة التالية (heard: no)
+function unheardAnswers() {
+  return vault.notes
+    .filter((n) => n.path.startsWith('Inbox/') && n.text.includes(`kind: ${BIG_KIND}`) && /^heard: no$/m.test(n.text) && /^status: answered$/m.test(n.text))
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .slice(-5)
+    .map((n) => ({
+      path: n.path,
+      title: (n.text.match(/^# (.+)$/m) || [])[1] || n.title,
+      answer: (n.text.split('## ردّ نيكست الكبير')[1] || '').split('## ما غيّرته')[0].trim().slice(0, 1500),
+    }));
+}
+
+async function markHeard(path) {
+  if (settings().repo === 'local') return console.info('[local] heard', path);
+  const enc = path.split('/').map(encodeURIComponent).join('/');
+  return ghWrite(async () => {
+  const file = await (await gh(`contents/${enc}`)).json();
+  const bytes = Uint8Array.from(atob(file.content.replace(/\n/g, '')), (c) => c.charCodeAt(0));
+  const text = new TextDecoder().decode(bytes).replace(/^heard: no$/m, 'heard: yes');
+  await gh(`contents/${enc}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: 'voice: answer heard', content: b64utf8(text), sha: file.sha }),
+  });
+  });
+}
+
 function systemInstruction() {
   const parts = CORE_FILES.map((p) => vault.byPath.get(p)).filter(Boolean)
     .map((n) => `===== ${n.path} =====\n${n.text}`);
@@ -414,6 +452,10 @@ function systemInstruction() {
     ...parts,
     `===== الكيانات التي لها ملفات (للبحث) =====\n${entities}`,
     `===== اللغات (من إعدادات التطبيق) =====\nالوليد يتكلم فقط: ${settings().langs}. أي كلام يبدو بلغة غيرها هو إحدى هذه اللغات لم يُسمع جيداً (ضوضاء أو لهجة): افهمه على هذا الأساس أو اطلب الإعادة. لا تردّ أبداً بلغة خارج هذه القائمة.`,
+    ...(() => {
+      const u = unheardAnswers();
+      return u.length ? [`===== ردود جديدة من نيكست الكبير لم يسمعها الوليد =====\n${u.map((x, i) => `${i + 1}) ${x.title}:\n${x.answer}`).join('\n\n')}`] : [];
+    })(),
     `آخر تحديث للفهرس: ${vault.built || 'غير معروف'}.`,
   ].join('\n\n');
 }
@@ -548,6 +590,11 @@ async function startCall() {
     });
     await connect();
     call.started = Date.now();
+    const unheard = unheardAnswers();
+    if (unheard.length) {
+      call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) ابدأ بإخبار الوليد باختصار أن عنده ${unheard.length === 1 ? 'رداً جديداً' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعها.` });
+      Promise.allSettled(unheard.map((x) => markHeard(x.path))).then((r) => r.forEach((x) => x.status === 'rejected' && console.warn('markHeard', x.reason)));
+    }
     acquireWakeLock();
     ui.mute.hidden = ui.end.hidden = ui.composer.hidden = false;
     ui.orb.classList.remove('idle');
