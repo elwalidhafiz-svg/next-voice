@@ -251,8 +251,8 @@ const TOOLS = [{
     },
     {
       name: 'open_loops',
+      // بلا parameters: Gemini يرفض كائناً بخصائص فارغة
       description: 'البنود المفتوحة: الالتزامات والمواعيد والمستحقات غير المحصّلة لكل المشاريع.',
-      parameters: { type: 'object', properties: {} },
     },
     {
       name: 'add_to_inbox',
@@ -456,7 +456,12 @@ async function startCall() {
 async function connect() {
   const s = settings();
   const ai = new GoogleGenAI({ apiKey: s.key });
-  const session = await ai.live.connect({
+  // الرسائل وإغلاق الاتصال قد تصل قبل أن تُرجع connect() الجلسة، لذلك تشير الـ callbacks إلى ref لا إلى المتغير
+  // وإن أُغلق قبل ذلك فقد لا تنتهي connect() أبداً، فنسابقها بالإغلاق المبكر وبمهلة
+  const ref = { s: null, closed: null, fail: null, abandoned: false };
+  const early = new Promise((_, reject) => { ref.fail = reject; });
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('انتهت مهلة الاتصال بـ Gemini (20 ث) — تحقق من الإنترنت.')), 20000));
+  const pending = ai.live.connect({
     model: MODEL,
     config: {
       responseModalities: [Modality.AUDIO],
@@ -470,19 +475,30 @@ async function connect() {
     },
     callbacks: {
       onopen: () => setStatus('متصل — تكلّم', 'live'),
-      onmessage: (m) => onMessage(m, session),
+      onmessage: (m) => onMessage(m, ref),
       onerror: (e) => { console.error('live error', e); note('sys', 'خطأ: ' + (e.message || 'غير معروف')); },
-      onclose: (e) => onClose(e, session),
+      onclose: (e) => onClose(e, ref),
     },
   });
+  let session;
+  try {
+    session = await Promise.race([pending, early, timeout]);
+  } catch (e) {
+    ref.abandoned = true;
+    pending.then((late) => { try { late.close(); } catch {} }, () => {});
+    throw e;
+  }
+  if (ref.closed) throw new Error(closeReason(ref.closed));
+  ref.s = session;
   const old = call.session;
   call.session = session;
   if (old && old !== session) { try { old.close(); } catch {} }
   return session;
 }
 
-async function onMessage(m, session) {
-  if (session !== call.session) return;
+async function onMessage(m, ref) {
+  if (ref.abandoned || (ref.s && ref.s !== call.session)) return;
+  const session = ref.s;
   if (m.sessionResumptionUpdate?.resumable && m.sessionResumptionUpdate.newHandle) {
     call.handle = m.sessionResumptionUpdate.newHandle;
   }
@@ -499,7 +515,7 @@ async function onMessage(m, session) {
       if (fc.name === 'add_to_inbox' && response.ok) note('tool', '✓ سُجّل في ' + response.path);
       responses.push({ id: fc.id, name: fc.name, response, scheduling: FunctionResponseScheduling.INTERRUPT });
     }
-    if (session === call.session) session.sendToolResponse({ functionResponses: responses });
+    if (session && session === call.session) session.sendToolResponse({ functionResponses: responses });
   }
   const sc = m.serverContent;
   if (!sc) return;
@@ -543,11 +559,24 @@ async function reconnect(reason) {
   reconnecting = false;
 }
 
-function onClose(e, session) {
-  if (session !== call.session) return; // جلسة قديمة أغلقناها بأنفسنا
-  if (!call.active || call.ending) return;
+function closeReason(e) {
+  const r = e?.reason || '';
+  if (/API key not valid/i.test(r)) return 'مفتاح Gemini غير صالح — راجعه في الإعدادات.';
+  if (/billing|quota|exceeded|RESOURCE_EXHAUSTED/i.test(r)) return 'رفضت Google الطلب بسبب الفوترة أو الحصة: ' + r;
+  if (/not found|not supported/i.test(r)) return 'النموذج غير متاح لهذا المفتاح: ' + r;
+  return `أُغلق الاتصال (${e?.code ?? '؟'})${r ? ': ' + r : ' دون سبب معلن'}`;
+}
+
+function onClose(e, ref) {
   console.warn('closed', e?.code, e?.reason);
-  if (e?.reason) note('sys', 'أُغلق الاتصال: ' + e.reason);
+  if (!ref.s) { // أُغلق قبل اكتمال الإعداد — connect() ترمي الخطأ
+    ref.closed = e || {};
+    if (!ref.abandoned) ref.fail(new Error(closeReason(ref.closed)));
+    return;
+  }
+  if (ref.s !== call.session) return; // جلسة قديمة أغلقناها بأنفسنا
+  if (!call.active || call.ending) return;
+  note('sys', closeReason(e));
   if (call.handle) reconnect('close');
   else endCall(true);
 }
@@ -672,4 +701,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool };
+window.__nv = { searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect };
