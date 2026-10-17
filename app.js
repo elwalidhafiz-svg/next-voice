@@ -487,8 +487,9 @@ const TOOLS = [{
         properties: {
           title: { type: 'string', description: 'عنوان قصير للطلب' },
           request: { type: 'string', description: 'الطلب كاملاً وواضحاً بالفصحى، بالأسماء والتواريخ والسياق من المكالمة، ليفهمه دون أن يسمعها' },
+          type: { type: 'string', enum: ['سؤال', 'فعل'], description: 'سؤال = يقرأ ويجيب فقط. فعل = يغيّر شيئاً (مهمة، إغلاق، تسجيل، اعتماد، تعديل)' },
         },
-        required: ['title', 'request'],
+        required: ['title', 'request', 'type'],
       },
     },
     {
@@ -511,7 +512,23 @@ const TOOLS = [{
 }];
 
 const MAX_NOTE = 9000;
-async function runTool(name, args = {}) {
+// تأكيد إلزامي في الكود: أي فعل لا يُنفَّذ عند استدعاء الأداة، بل يُعلَّق حتى يقول الوليد «أيوه» بصوته
+// (أو يكتبها). النموذج يسأل، والتطبيق نفسه ينفّذ أو يلغي حسب رده.
+const GATED = (name, args) => name === 'mark_done' || name === 'add_to_inbox' || (name === 'ask_big_next' && args.type !== 'سؤال');
+function summarize(name, args) {
+  if (name === 'mark_done') return `هقفل: ${args.item}`;
+  if (name === 'add_to_inbox') return `هسجّل في الـ Inbox: ${args.title}`;
+  return `هبعت لنيكست الكبير: ${args.request || args.title}`;
+}
+async function runTool(name, args = {}, confirmed = false) {
+  if (!confirmed && GATED(name, args)) {
+    call.pending = { name, args, at: Date.now(), heard: '' };
+    note('tool', `⏸ ينتظر تأكيدك: ${summarize(name, args)}`);
+    return {
+      status: 'بانتظار تأكيد الوليد — لم يُنفَّذ',
+      instruction: `اسأل الوليد الآن بجملة واحدة: «${summarize(name, args)}، صح؟» ولا تقل إنه تم. التطبيق ينفّذه تلقائياً إن قال نعم، ويلغيه إن قال لا.`,
+    };
+  }
   switch (name) {
     case 'search_vault': {
       const r = searchVault(args.query || '');
@@ -717,7 +734,7 @@ function u8ToB64(u8) {
 // ---------- المكالمة ----------
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
-  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0,
+  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null,
   lastUser: 0, lastModel: 0, news: [], pollTimer: 0, idleTimer: 0,
 };
 
@@ -735,7 +752,30 @@ async function pollNews() {
   const known = new Set(call.news.map((x) => x.path));
   call.news.push(...unheardAnswers().filter((x) => !known.has(x.path)));
 }
+const YES = /(^|[\s،,.!؟?])(أيوه|ايوه|أيوا|ايوا|أيوة|ايوة|آه|اه|أه|ايه|إيه|نعم|تمام|صح|صحيح|أكيد|اكيد|ماشي|أوكي|اوكي|يلا|بالظبط|بالضبط|ok|okay|yes|yeah|yep|sure)($|[\s،,.!؟?])/i;
+const NO = /(^|[\s،,.!؟?])(لا|لأ|لاء|مش|غلط|استنى|استني|الغي|ألغي|بلاش|no|nope|cancel|wait)($|[\s،,.!؟?])/i;
+async function resolvePending() {
+  const pend = call.pending;
+  if (!pend || !call.session) return;
+  if (Date.now() - pend.at > 90000) { call.pending = null; note('tool', '⌛ أُلغي (لم يصل تأكيد)'); return; }
+  const said = pend.heard.trim();
+  if (!said || Date.now() - call.lastUser < 1500) return; // ينتظر انتهاء كلامه
+  const no = NO.test(said), yes = YES.test(said);
+  call.pending = null;
+  if (yes && !no) {
+    let result;
+    try { result = await runTool(pend.name, pend.args, true); } catch (e) { result = { error: String(e.message || e) }; }
+    note('tool', result.error ? `✗ ${result.error}` : `✓ نُفّذ: ${summarize(pend.name, pend.args)}`);
+    call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) أكّد الوليد، ونُفّذ: ${summarize(pend.name, pend.args)}. ${result.error ? 'لكن فشل: ' + result.error : 'قل له بجملة قصيرة إنه تم.'}` });
+  } else if (no) {
+    note('tool', '✗ أُلغي بطلبك');
+    call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) رفض الوليد: ${summarize(pend.name, pend.args)}. لم يُنفَّذ. اسأله ماذا يريد بدلاً منه إن لزم.` });
+  } else {
+    call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) لم يتضح هل وافق على: ${summarize(pend.name, pend.args)}. لم يُنفَّذ. إن ما زال يريده فاستدعِ الأداة نفسها من جديد واسأله بوضوح.` });
+  }
+}
 function announceIfIdle() {
+  resolvePending();
   const now = Date.now();
   const idle = audio.sources.size === 0 && now - call.lastUser > 4000 && now - call.lastModel > 2500;
   if (!call.news.length || !call.session || !idle) return;
@@ -870,7 +910,12 @@ async function onMessage(m, ref) {
   const sc = m.serverContent;
   if (!sc) return;
   if (sc.interrupted) stopPlayback();
-  if (sc.inputTranscription?.text) { call.lastUser = Date.now(); say('user', sc.inputTranscription.text); }
+  if (sc.inputTranscription?.text) {
+    call.lastUser = Date.now();
+    // يُحتسب فقط كلامه بعد أن بدأ نيكست يسأله (لا بقايا تفريغ جملته الأولى)
+    if (call.pending && call.lastModel > call.pending.at) call.pending.heard += sc.inputTranscription.text;
+    say('user', sc.inputTranscription.text);
+  }
   for (const p of sc.modelTurn?.parts || []) {
     if (p.inlineData?.data && p.inlineData.mimeType?.startsWith('audio/')) playPcm24k(p.inlineData.data);
   }
@@ -937,6 +982,7 @@ function onClose(e, ref) {
 async function endCall(silent = false) {
   call.ending = true;
   stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
+  call.pending = null; // فعل لم يُؤكَّد لا يُنفَّذ
   const mins = call.started ? (Date.now() - call.started) / 60000 : 0;
   if (mins > 0) addUsage(mins);
   try { call.session?.close(); } catch {}
@@ -1014,6 +1060,7 @@ ui.composer.addEventListener('submit', (e) => {
   if (!t || !call.session) return;
   note('user', t);
   call.lastUser = Date.now();
+  if (call.pending) call.pending.heard += ' ' + t;
   call.session.sendRealtimeInput({ text: t });
   ui.text.value = '';
 });
@@ -1146,4 +1193,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
+window.__nv = { resolvePending, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
