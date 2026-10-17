@@ -722,6 +722,37 @@ registerProcessor('capture', Capture);`;
 
 const audio = { ctx: null, stream: null, node: null, src: null, out: null, inAn: null, outAn: null, playHead: 0, sources: new Set() };
 
+// بوابة المايك: سماعة الجوال تُرجع صوت نيكست إلى المايك (صدى)، والضوضاء تُفرَّغ كلاماً وهمياً.
+// ما دون العتبة يُرسل صمتاً (لا يُقطع البث حتى يعرف Gemini أن الكلام انتهى). أثناء كلام نيكست العتبة أعلى بكثير،
+// فلا يمر إلا صوت الوليد الواضح فوقه (المقاطعة).
+const GATE = { noise: 0.01, barge: 0.08, bargeChunks: 3, hangMs: 600, tailMs: 500, preChunks: 5 };
+const gate = { loud: 0, openUntil: 0, pre: [] };
+function rms16(u8) {
+  const s = new Int16Array(u8.buffer, u8.byteOffset, u8.byteLength >> 1);
+  let sum = 0;
+  for (let i = 0; i < s.length; i++) sum += s[i] * s[i];
+  return s.length ? Math.sqrt(sum / s.length) / 32768 : 0;
+}
+// نيكست يتكلم الآن، أو أنهى كلامه منذ أقل من ms
+function nextSpeaking(ms = GATE.tailMs) {
+  return audio.sources.size > 0 || (!!audio.ctx && audio.ctx.currentTime < audio.playHead + ms / 1000);
+}
+function gateChunk(u8) {
+  const now = Date.now(), playing = nextSpeaking();
+  gate.loud = rms16(u8) >= (playing ? GATE.barge : GATE.noise) ? gate.loud + 1 : 0;
+  if (gate.loud >= (playing ? GATE.bargeChunks : 1)) {
+    const out = now > gate.openUntil ? [...gate.pre, u8] : [u8]; // ما قبل بداية الكلام حتى لا يضيع أول الحرف
+    gate.pre = [];
+    gate.openUntil = now + GATE.hangMs;
+    return out;
+  }
+  if (now < gate.openUntil) return [u8]; // ذيل الجملة وما بين الكلمات
+  if (playing && !gate.loud) gate.pre = []; // أثناء كلام نيكست لا يُحفظ إلا الصوت العالي (بداية مقاطعة)، لا الصدى
+  else gate.pre.push(u8);
+  if (gate.pre.length > GATE.preChunks) gate.pre.shift();
+  return [new Uint8Array(u8.length)];
+}
+
 async function startAudio(onChunk) {
   audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
   await audio.ctx.resume();
@@ -887,7 +918,9 @@ async function startCall() {
     setStatus(`حمّلت ${n} ملفاً — أفتح المايك…`, 'busy');
     await startAudio((u8) => {
       if (!call.muted && call.session) {
-        try { call.session.sendRealtimeInput({ audio: { data: u8ToB64(u8), mimeType: 'audio/pcm;rate=16000' } }); } catch {}
+        for (const c of gateChunk(u8)) {
+          try { call.session.sendRealtimeInput({ audio: { data: u8ToB64(c), mimeType: 'audio/pcm;rate=16000' } }); } catch {}
+        }
       }
     });
     await connect();
@@ -931,6 +964,8 @@ async function connect() {
       outputAudioTranscription: {},
       tools: TOOLS,
       contextWindowCompression: { slidingWindow: {} },
+      // بداية الكلام بحساسية منخفضة: الضوضاء القصيرة لا تُحسب كلاماً
+      realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', prefixPaddingMs: 200 } },
       sessionResumption: call.handle ? { handle: call.handle } : {},
     },
     callbacks: {
@@ -984,7 +1019,8 @@ async function onMessage(m, ref) {
   if (sc.inputTranscription?.text) {
     call.lastUser = Date.now();
     // يُحتسب فقط كلامه بعد أن بدأ نيكست يسأله (لا بقايا تفريغ جملته الأولى)
-    if (call.pending && call.lastModel > call.pending.at) call.pending.heard += sc.inputTranscription.text;
+    // وما يصل أثناء كلام نيكست أو بعده مباشرة غالباً صدى سؤاله نفسه («…صح؟») فلا يُحسب موافقة
+    if (call.pending && call.lastModel > call.pending.at && !nextSpeaking(800)) call.pending.heard += sc.inputTranscription.text;
     say('user', sc.inputTranscription.text);
   }
   for (const p of sc.modelTurn?.parts || []) {
@@ -1055,6 +1091,7 @@ async function endCall(silent = false) {
   call.ending = true;
   stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
   call.pending = null; // فعل لم يُؤكَّد لا يُنفَّذ
+  Object.assign(gate, { loud: 0, openUntil: 0, pre: [] });
   for (const x of call.offered) announced.delete(x.path); // ما أُعلن ولم يُقرأ يبقى heard: no ويُذكر في المكالمة التالية
   call.offered = [];
   const mins = call.started ? (Date.now() - call.started) / 60000 : 0;
