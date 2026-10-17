@@ -214,6 +214,7 @@ const settings = () => ({
   repo: devRepo || store.get('repo').trim(),
   voice: store.get('voice', 'Orus'),
   langs: store.get('langs').trim() || DEFAULT_LANGS,
+  barge: store.get('barge', 'on'),
 });
 
 // ---------- واجهة ----------
@@ -513,7 +514,7 @@ const TOOLS = [{
     },
     {
       name: 'add_to_inbox',
-      description: 'سجّل ملاحظة أو فكرة أو قراراً في Inbox/ ليُعالَج لاحقاً. ليس لمهام To Do: أي مهمة تُرسل بـ ask_big_next لتُضاف فعلاً. أعد ما ستسجّله بجملة وانتظر موافقة الوليد قبل الاستدعاء.',
+      description: 'سجّل ملاحظة أو فكرة أو قراراً في Inbox/ ليُعالَج لاحقاً. ليس لمهام To Do: أي مهمة تُرسل بـ ask_big_next لتُضاف فعلاً. استدعها فوراً دون أن تسأل؛ التطبيق يعلّقها ويعطيك جملة التأكيد.',
       parameters: {
         type: 'object',
         properties: {
@@ -526,7 +527,7 @@ const TOOLS = [{
     },
     {
       name: 'ask_big_next',
-      description: 'أرسل طلباً إلى نيكست الكبير (Claude على الماك) حين يحتاج ما لا تملكه: إضافة مهمة To Do، واتساب، الشيتات، Gmail، Trello، تقرير، أو تحليل عميق. للأسئلة استدعها مباشرة. للأفعال (مهمة، تعديل، رسالة) أكّد فهمك مع الوليد بجملة واحدة وانتظر موافقته قبل الاستدعاء، لأن نيكست الكبير سينفّذ دون سؤال.',
+      description: 'أرسل طلباً إلى نيكست الكبير (Claude على الماك) حين يحتاج ما لا تملكه: إضافة مهمة To Do، واتساب، الشيتات، Gmail، Trello، تقرير، أو تحليل عميق. للأسئلة استدعها مباشرة. للأفعال (مهمة، تعديل، رسالة) استدعها فوراً بنوع «فعل» دون أن تسأل؛ التطبيق يعلّقها ويعطيك جملة التأكيد الوحيدة.',
       parameters: {
         type: 'object',
         properties: {
@@ -539,7 +540,7 @@ const TOOLS = [{
     },
     {
       name: 'mark_done',
-      description: 'حين يقول الوليد إن بنداً من البنود المفتوحة انتهى («خلصت…»، «سحر سلّمت»)، أو يوافق على إغلاق ما يبدو من واتساب أنه أُنجز: أكّد البند بجملة، ثم استدعها. يتوقف ذكره فوراً، ويغلقه نيكست الكبير في Open Loops.',
+      description: 'حين يقول الوليد إن بنداً من البنود المفتوحة انتهى («خلصت…»، «سحر سلّمت»)، أو يوافق على إغلاق ما يبدو من واتساب أنه أُنجز: استدعها فوراً دون أن تسأل؛ التطبيق يتحقق من البند ويعطيك جملة التأكيد. يتوقف ذكره فوراً، ويغلقه نيكست الكبير في Open Loops.',
       parameters: {
         type: 'object',
         properties: {
@@ -548,6 +549,11 @@ const TOOLS = [{
         },
         required: ['item'],
       },
+    },
+    {
+      name: 'confirm_action',
+      // بلا parameters: الكود يحكم من كلام الوليد نفسه
+      description: 'استدعها مباشرة بعد أن يردّ الوليد على سؤال التأكيد («…، صح؟»)، أياً كان رده (أيوه، لا، أو غير واضح). التطبيق يقرر من كلامه هو وينفّذ أو يلغي، ويقول لك الجملة الوحيدة التي تقولها بعدها.',
     },
     {
       name: 'answers_heard',
@@ -583,11 +589,11 @@ async function runTool(name, args = {}, confirmed = false) {
     args = { ...args, item: v.line.slice(0, 160), evidence: args.evidence || (v.evidence ? 'حسب واتساب: ' + v.evidence : ''), _wa: v.evidence };
   }
   if (!confirmed && GATED(name, args)) {
-    call.pending = { name, args, at: Date.now(), heard: '' };
+    call.pending = { name, args, at: Date.now(), heard: '', nudged: false };
     note('tool', `⏸ ينتظر تأكيدك: ${summarize(name, args)}`);
     return {
       status: 'بانتظار تأكيد الوليد — لم يُنفَّذ',
-      instruction: `اسأل الوليد الآن بجملة واحدة: «${summarize(name, args)}، صح؟» ولا تقل إنه تم. التطبيق ينفّذه تلقائياً إن قال نعم، ويلغيه إن قال لا.`,
+      instruction: `اسأل الوليد الآن بجملة واحدة: «${summarize(name, args)}، صح؟» ثم اسكت. بعد رده (أياً كان) استدعِ confirm_action، ولا تقل «تم» أو «أرسلت» قبل نتيجتها.`,
     };
   }
   switch (name) {
@@ -615,6 +621,8 @@ async function runTool(name, args = {}, confirmed = false) {
         path: await addToInbox({ title: args.title, content: args.request, kind: BIG_KIND, type: args.type === 'سؤال' ? 'سؤال' : 'فعل' }), // غير «سؤال» لا يصل هنا إلا بعد التأكيد (GATED)
         note: 'أُرسل. إن كان الماك مفتوحاً يصل الرد على تيليجرام خلال دقائق، وإلا يُنفَّذ فور فتح الماك ويصل ملخص بما فُعل، ويستطيع الوليد إلغاءه من تيليجرام.',
       };
+    case 'confirm_action':
+      return confirmAction();
     case 'answers_heard': {
       const list = call.offered.splice(0);
       markAllHeard(list);
@@ -737,8 +745,19 @@ function rms16(u8) {
 function nextSpeaking(ms = GATE.tailMs) {
   return audio.sources.size > 0 || (!!audio.ctx && audio.ctx.currentTime < audio.playHead + ms / 1000);
 }
+// كل كلماته موجودة فيما قاله نيكست للتو (وهو يتكلم أو بعده بلحظة) ← صدى من السماعة لا كلام الوليد
+function isEcho(text) {
+  if (!nextSpeaking(1500)) return false;
+  const split = (s) => norm(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const words = split(text);
+  if (!words.length) return true;
+  const said = new Set(split(call.modelText)); // كلمات كاملة: «لا» ليست صدى لأن «الأحد» فيها «لا»
+  // وبداية كلمة قالها (التفريغ يقطع الصدى أحياناً: «على تلي» من «على تيليجرام»)
+  return words.every((w) => said.has(w) || (w.length >= 3 && [...said].some((x) => x.startsWith(w))));
+}
 function gateChunk(u8) {
   const now = Date.now(), playing = nextSpeaking();
+  if (playing && settings().barge === 'off') { gate.loud = 0; gate.pre = []; gate.openUntil = 0; return [new Uint8Array(u8.length)]; } // المقاطعة مُطفأة: المايك صامت وهو يتكلم
   gate.loud = rms16(u8) >= (playing ? GATE.barge : GATE.noise) ? gate.loud + 1 : 0;
   if (gate.loud >= (playing ? GATE.bargeChunks : 1)) {
     const out = now > gate.openUntil ? [...gate.pre, u8] : [u8]; // ما قبل بداية الكلام حتى لا يضيع أول الحرف
@@ -832,7 +851,7 @@ function u8ToB64(u8) {
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
   started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null,
-  lastUser: 0, lastModel: 0, news: [], offered: [], pollTimer: 0, idleTimer: 0,
+  lastUser: 0, lastModel: 0, modelText: '', news: [], offered: [], pollTimer: 0, idleTimer: 0,
 };
 
 // أُعلن في هذه المكالمة ولم يُسمع بعد: لا يُعلن ثانيةً فيها، ويبقى heard: no حتى answers_heard
@@ -856,29 +875,54 @@ async function pollNews() {
 }
 const YES = /(^|[\s،,.!؟?])(أيوه|ايوه|أيوا|ايوا|أيوة|ايوة|آه|اه|أه|نعم|تمام|صح|صحيح|أكيد|اكيد|ماشي|أوكي|اوكي|يلا|بالظبط|بالضبط|ok|okay|yes|yeah|yep|sure)($|[\s،,.!؟?])/i;
 const NO = /(^|[\s،,.!؟?])(لا|لأ|لاء|مش|غلط|استنى|استني|الغي|ألغي|بلاش|no|nope|cancel|wait)($|[\s،,.!؟?])/i;
-async function resolvePending() {
+// مسار التأكيد الواحد: الأداة الفعلية تُعلَّق (call.pending) ← نيكست يسأل مرة ← بعد ردّ الوليد يستدعي confirm_action
+// ← الكود يحكم من كلام الوليد نفسه (لا من النموذج) وينفّذ أو يلغي، ويعطي نيكست جملة واحدة يقولها. لا تنبيهات نصية، فلا تكرار.
+const PENDING_TTL = 120000;
+const DONE_LINE = {
+  mark_done: 'تمام، قفلتها.',
+  add_to_inbox: 'سجّلتها.',
+  ask_big_next: 'أرسلتها لنيكست الكبير، وهيبلغك على تيليجرام لما يخلّصها.',
+};
+async function confirmAction() {
   const pend = call.pending;
-  if (!pend || !call.session) return;
-  if (Date.now() - pend.at > 90000) { call.pending = null; note('tool', '⌛ أُلغي (لم يصل تأكيد)'); return; }
+  if (!pend) return { status: 'لا يوجد فعل ينتظر التأكيد — لم يُنفَّذ شيء', instruction: 'لا تقل إنه تم. إن كان يريد فعلاً فاستدعِ أداته الآن.' };
+  if (Date.now() - pend.at > PENDING_TTL) {
+    call.pending = null;
+    note('tool', '⌛ أُلغي (لم يصل تأكيد)');
+    return { status: 'انتهت مهلة التأكيد — لم يُنفَّذ', instruction: 'قل له إنك لم تنفّذه، وإن ما زال يريده فاستدعِ أداته من جديد.' };
+  }
+  if (!pend.heard.trim()) await new Promise((r) => setTimeout(r, 900)); // تفريغ كلامه قد يتأخر لحظة عن استدعاء الأداة
   const said = pend.heard.trim();
-  if (!said || Date.now() - call.lastUser < 1500) return; // ينتظر انتهاء كلامه
   const no = NO.test(said), yes = YES.test(said);
-  call.pending = null;
   if (yes && !no) {
+    call.pending = null;
     let result;
     try { result = await runTool(pend.name, pend.args, true); } catch (e) { result = { error: String(e.message || e) }; }
-    note('tool', result.error ? `✗ ${result.error}` : `✓ نُفّذ: ${summarize(pend.name, pend.args)}`);
-    call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) أكّد الوليد، ونُفّذ: ${summarize(pend.name, pend.args)}. ${result.error ? 'لكن فشل: ' + result.error : 'قل له بجملة قصيرة إنه تم.'}` });
-  } else if (no) {
-    note('tool', '✗ أُلغي بطلبك');
-    call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) رفض الوليد: ${summarize(pend.name, pend.args)}. لم يُنفَّذ. اسأله ماذا يريد بدلاً منه إن لزم.` });
-  } else {
-    call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) لم يتضح هل وافق على: ${summarize(pend.name, pend.args)}. لم يُنفَّذ. إن ما زال يريده فاستدعِ الأداة نفسها من جديد واسأله بوضوح.` });
+    if (result.error) {
+      note('tool', `✗ ${result.error}`);
+      return { status: 'فشل التنفيذ', error: result.error, instruction: 'قل له بجملة إنه فشل والسبب باختصار.' };
+    }
+    note('tool', `✓ نُفّذ: ${summarize(pend.name, pend.args)}`);
+    return { status: 'نُفّذ', instruction: `قل جملة واحدة فقط: «${DONE_LINE[pend.name] || 'تم.'}» ولا تكرر ما سألته.` };
   }
+  if (no) {
+    call.pending = null;
+    note('tool', '✗ أُلغي بطلبك');
+    return { status: 'رفض الوليد — أُلغي ولم يُنفَّذ', instruction: 'قل «تمام، مش هعملها» بجملة قصيرة، وإن بدا أنه يريد شيئاً معدّلاً فاسأله عنه.' };
+  }
+  pend.heard = '';
+  pend.at = Date.now();
+  return { status: 'لم يتضح رده — لم يُنفَّذ، وما زال ينتظر', heard: said || '(لم يُسمع شيء)', instruction: 'اسأله مرة واحدة باختصار: «أيوه ولا لا؟»، ثم استدعِ confirm_action بعد رده.' };
 }
 function announceIfIdle() {
-  resolvePending();
   const now = Date.now();
+  const pend = call.pending;
+  if (pend && now - pend.at > PENDING_TTL) { call.pending = null; note('tool', '⌛ أُلغي (لم يصل تأكيد)'); }
+  else if (pend && pend.heard.trim() && !pend.nudged && now - call.lastUser > 6000 && now - call.lastModel > 3000 && call.session) {
+    // ردّ الوليد ولم يستدعِ نيكست confirm_action: تذكير واحد (لا يُنفَّذ شيء دون استدعائها)
+    pend.nudged = true;
+    call.session.sendRealtimeInput({ text: '(تنبيه من النظام، لا تقرأه) الوليد ردّ على سؤال التأكيد. استدعِ confirm_action الآن ولا تقل شيئاً قبل نتيجتها.' });
+  }
   const idle = audio.sources.size === 0 && now - call.lastUser > 4000 && now - call.lastModel > 2500;
   if (!call.news.length || !call.session || !idle) return;
   const list = call.news.splice(0);
@@ -911,6 +955,7 @@ async function startCall() {
   call.ending = false;
   call.handle = null;
   call.retries = 0;
+  call.modelText = '';
   ui.orb.disabled = true;
   setStatus('أحمّل العقل الثاني…', 'busy');
   try {
@@ -1019,14 +1064,18 @@ async function onMessage(m, ref) {
   if (sc.inputTranscription?.text) {
     call.lastUser = Date.now();
     // يُحتسب فقط كلامه بعد أن بدأ نيكست يسأله (لا بقايا تفريغ جملته الأولى)
-    // وما يصل أثناء كلام نيكست أو بعده مباشرة غالباً صدى سؤاله نفسه («…صح؟») فلا يُحسب موافقة
-    if (call.pending && call.lastModel > call.pending.at && !nextSpeaking(800)) call.pending.heard += sc.inputTranscription.text;
+    // يُحسب كلامه بعد أن بدأ نيكست يسأله، إلا ما هو صدى كلام نيكست نفسه («…صح؟») — بالكلمات لا بالتوقيت،
+    // لأن نيكست يبدأ الرد فور سكوته فيصل تفريغ «أيوه» وهو يتكلم
+    if (call.pending && call.lastModel > call.pending.at && !isEcho(sc.inputTranscription.text)) call.pending.heard += ' ' + sc.inputTranscription.text;
     say('user', sc.inputTranscription.text);
   }
   for (const p of sc.modelTurn?.parts || []) {
     if (p.inlineData?.data && p.inlineData.mimeType?.startsWith('audio/')) playPcm24k(p.inlineData.data);
   }
-  if (sc.outputTranscription?.text) say('next', sc.outputTranscription.text);
+  if (sc.outputTranscription?.text) {
+    call.modelText = (call.modelText + ' ' + sc.outputTranscription.text).slice(-600);
+    say('next', sc.outputTranscription.text);
+  }
   if (sc.turnComplete) bubble = { role: null, el: null };
 }
 
@@ -1040,6 +1089,7 @@ function toolLabel(name, args = {}) {
     case 'ask_big_next': return `📨 إلى نيكست الكبير: ${args.title || ''}`;
     case 'big_next_status': return '📬 يراجع ردود نيكست الكبير';
     case 'answers_heard': return '👂 سمع ردود نيكست الكبير';
+    case 'confirm_action': return '🗣️ يتحقق من ردك';
     default: return name;
   }
 }
@@ -1262,7 +1312,13 @@ $('lockToggle').addEventListener('click', async () => {
   }
   showLock();
 });
-$('settingsBtn').addEventListener('click', () => { fillSettings(); dlg.showModal(); });
+function showBarge() {
+  const on = settings().barge !== 'off';
+  $('bargeToggle').textContent = on ? 'مفعّلة — تقاطعه بصوت عالٍ' : 'مُطفأة — المايك مغلق وهو يتكلم';
+  $('bargeToggle').classList.toggle('on', !on);
+}
+$('bargeToggle').addEventListener('click', () => { store.set('barge', settings().barge === 'off' ? 'on' : 'off'); showBarge(); });
+$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
 for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
@@ -1304,4 +1360,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { verifyItem, boardSection, resolvePending, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
+window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
