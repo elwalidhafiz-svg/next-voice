@@ -128,6 +128,17 @@
   .add-lang { display: flex; gap: 8px; margin-top: 8px; }
   dialog .add-lang input { direction: rtl; text-align: right; }
   .add-lang .pill { flex: none; }
+  .lock-screen {
+    position: fixed; inset: 0; z-index: 50; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px;
+  }
+  .lock-screen .mark.big {
+    width: 72px; height: 72px; border-radius: 20px; font-size: 34px; font-weight: 700; color: #fff;
+    display: grid; place-items: center; background: linear-gradient(135deg, var(--pink), var(--indigo));
+  }
+  .lock-title { font-size: 20px; font-weight: 700; }
+  .lock-screen .check { color: var(--err); text-align: center; }
+  .link { background: none; border: none; color: var(--muted); font: 13px "IBM Plex Sans Arabic", sans-serif; text-decoration: underline; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -158,6 +169,14 @@
   </form>
 </div>
 
+<div class="lock-screen" id="lockScreen" hidden>
+  <div class="mark big">N</div>
+  <div class="lock-title">نيكست مقفل</div>
+  <button class="pill primary" id="unlockBtn">افتح بـ Face ID</button>
+  <div class="check" id="lockError"></div>
+  <button class="link" id="lockReset">لا يعمل؟ امسح المفاتيح وأدخلها من جديد</button>
+</div>
+
 <dialog id="settings">
   <form method="dialog" id="settingsForm">
     <h2>الإعدادات</h2>
@@ -176,6 +195,9 @@
       <input id="sLangNew" placeholder="لغة أخرى…" autocomplete="off">
       <button class="pill" type="button" id="sLangAdd">إضافة</button>
     </div>
+    <label>قفل Face ID</label>
+    <div class="lock-row"><button class="pill" type="button" id="lockToggle">تفعيل قفل Face ID</button></div>
+    <div class="check" id="lockStatus"></div>
     <div class="check" id="checkResult"></div>
     <div class="row">
       <button class="pill primary" value="save" id="saveBtn">حفظ</button>

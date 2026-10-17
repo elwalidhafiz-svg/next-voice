@@ -72,9 +72,16 @@ function lsGet() {
   return Object.keys(obj).length ? obj : null;
 }
 
+// مع قفل Face ID المشفّر (lock.mode = prf) لا يُحفظ المفتاح والرمز إلا مشفّرين في secrets.enc
+const SECRET_KEYS = ['key', 'token'];
 async function persistAll() {
-  const obj = Object.fromEntries(memory);
-  try { for (const [k, v] of memory) localStorage.setItem(LS_PREFIX + k, v); storage.ls = true; } catch { storage.ls = false; }
+  const encrypted = memory.get('lock.mode') === 'prf';
+  const obj = Object.fromEntries([...memory].filter(([k]) => !(encrypted && SECRET_KEYS.includes(k))));
+  try {
+    for (const [k, v] of Object.entries(obj)) localStorage.setItem(LS_PREFIX + k, v);
+    if (encrypted) for (const k of SECRET_KEYS) localStorage.removeItem(LS_PREFIX + k);
+    storage.ls = true;
+  } catch { storage.ls = false; }
   try { await idbPut(obj); storage.idb = true; } catch { storage.idb = false; }
   try { await cachePut(obj); storage.cache = true; } catch { storage.cache = false; }
 }
@@ -83,7 +90,7 @@ async function initStore() {
   let found = null;
   for (const read of [async () => lsGet(), idbGet, cacheGet]) {
     try { found = await read(); } catch { found = null; }
-    if (found && (found.key || found.token)) break;
+    if (found && (found.key || found.token || found['secrets.enc'])) break;
   }
   if (found) for (const [k, v] of Object.entries(found)) memory.set(k, String(v));
   try { storage.persisted = (await navigator.storage?.persist?.()) || false; } catch {}
@@ -95,6 +102,107 @@ const store = {
   set(k, v) { memory.set(k, v); persistAll(); },
 };
 await initStore();
+
+// ---------- قفل Face ID (Passkey) ----------
+// مفتاح مرور على الجهاز (iCloud Keychain) يُطلب عند الفتح وبعد 5 دقائق في الخلفية.
+// إن دعم Safari خاصية PRF: يُشتق منه مفتاح AES يشفّر مفتاح Gemini ورمز GitHub، فلا يُقرآن دون Face ID.
+// وإلا: قفل للواجهة فقط (lock.mode = gate).
+const LOCK_AFTER_MS = 5 * 60 * 1000;
+const lock = { aesKey: null, locked: false, hiddenAt: 0 };
+const b64u = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)),
+};
+const lockEnabled = () => !!store.get('lock.cred');
+
+async function aesFromPrf(prfBytes) {
+  const base = await crypto.subtle.importKey('raw', prfBytes, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: new TextEncoder().encode('next-voice-secrets') },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
+  );
+}
+async function sealSecrets() {
+  if (!lock.aesKey) return;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plain = new TextEncoder().encode(JSON.stringify({ key: memory.get('key') || '', token: memory.get('token') || '' }));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, lock.aesKey, plain);
+  memory.set('secrets.enc', JSON.stringify({ iv: b64u.enc(iv), ct: b64u.enc(ct) }));
+  await persistAll();
+}
+async function openSecrets() {
+  const box = JSON.parse(store.get('secrets.enc') || 'null');
+  if (!box) return;
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64u.dec(box.iv) }, lock.aesKey, b64u.dec(box.ct));
+  const s = JSON.parse(new TextDecoder().decode(plain));
+  memory.set('key', s.key); memory.set('token', s.token);
+}
+
+async function passkeyGet() {
+  const salt = b64u.dec(store.get('lock.salt'));
+  const cred = await navigator.credentials.get({ publicKey: {
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    allowCredentials: [{ type: 'public-key', id: b64u.dec(store.get('lock.cred')) }],
+    userVerification: 'required',
+    timeout: 60000,
+    extensions: { prf: { eval: { first: salt } } },
+  } });
+  return cred.getClientExtensionResults()?.prf?.results?.first || null;
+}
+
+async function enableLock() {
+  if (!window.PublicKeyCredential) throw new Error('هذا المتصفح لا يدعم Face ID للمواقع.');
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const cred = await navigator.credentials.create({ publicKey: {
+    rp: { name: 'نيكست', id: location.hostname },
+    user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'next-voice', displayName: 'نيكست الصوتي' },
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'preferred', userVerification: 'required' },
+    timeout: 60000,
+    extensions: { prf: { eval: { first: salt } } },
+  } });
+  store.set('lock.cred', b64u.enc(cred.rawId));
+  store.set('lock.salt', b64u.enc(salt));
+  // نتيجة PRF لا تصل دائماً عند الإنشاء؛ نطلبها بقراءة فورية
+  let prf = cred.getClientExtensionResults()?.prf?.results?.first || null;
+  if (!prf) { try { prf = await passkeyGet(); } catch { prf = null; } }
+  if (prf) {
+    lock.aesKey = await aesFromPrf(prf);
+    memory.set('lock.mode', 'prf');
+    await sealSecrets();
+  } else {
+    store.set('lock.mode', 'gate');
+  }
+  return store.get('lock.mode');
+}
+
+async function disableLock() {
+  for (const k of ['lock.cred', 'lock.salt', 'lock.mode', 'secrets.enc']) memory.delete(k);
+  lock.aesKey = null;
+  try { for (const k of ['lock.cred', 'lock.salt', 'lock.mode', 'secrets.enc']) localStorage.removeItem(LS_PREFIX + k); } catch {}
+  await persistAll(); // يعيد المفتاح والرمز مكشوفين كما كانا قبل القفل
+}
+
+async function unlock() {
+  const prf = await passkeyGet();
+  if (store.get('lock.mode') === 'prf') {
+    if (!prf) throw new Error('لم يُرجع Face ID مفتاح فك التشفير.');
+    lock.aesKey = await aesFromPrf(prf);
+    await openSecrets();
+  }
+  lock.locked = false;
+  document.getElementById('lockScreen').hidden = true;
+}
+
+function lockNow() {
+  if (!lockEnabled()) return;
+  lock.locked = true;
+  if (store.get('lock.mode') === 'prf') { memory.delete('key'); memory.delete('token'); lock.aesKey = null; }
+  try { document.getElementById('settings').close(); } catch {}
+  document.getElementById('lockScreen').hidden = false;
+  document.getElementById('lockError').textContent = '';
+}
 const LANG_OPTIONS = ['العربية المصرية', 'العربية الفصحى', 'العربية الخليجية', 'العربية السودانية', 'الإنجليزية', 'الفرنسية', 'الأوردو', 'الهندية', 'التركية', 'الإسبانية', 'الألمانية'];
 const DEFAULT_LANGS = 'العربية المصرية، العربية الفصحى، الإنجليزية';
 const splitLangs = (s) => s.split(/[،,]/).map((x) => x.trim()).filter(Boolean);
@@ -611,6 +719,7 @@ function stopNewsWatch() {
 
 async function startCall() {
   const s = settings();
+  if (lock.locked) return;
   if (!s.key || !s.repo || (s.repo !== 'local' && !s.token)) {
     $('settings').showModal();
     setStatus('أكمل الإعدادات أولاً', 'err');
@@ -877,6 +986,14 @@ function fillSettings() {
   $('sKey').value = s.key; $('sToken').value = s.token; $('sRepo').value = store.get('repo'); sel.value = s.voice;
   renderLangs();
   showStorage();
+  showLock();
+}
+function showLock() {
+  const mode = store.get('lock.mode');
+  $('lockToggle').textContent = lockEnabled() ? 'إيقاف قفل Face ID' : 'تفعيل قفل Face ID';
+  $('lockStatus').textContent = !lockEnabled() ? 'غير مفعّل — المفتاح والرمز محفوظان على الجهاز دون تشفير.'
+    : mode === 'prf' ? '✓ مفعّل: المفتاح والرمز مشفّران، ولا يُفتحان إلا بـ Face ID.'
+    : '✓ مفعّل كقفل للواجهة فقط (هذا الجهاز لا يدعم التشفير بـ Face ID).';
 }
 // اللغات: أزرار تُفعَّل وتُعطَّل، ولغة أخرى تُضاف من الخانة. تُحفظ نصاً مفصولاً بـ «، ».
 function renderLangs() {
@@ -927,7 +1044,25 @@ function saveSettings() {
   store.set('repo', $('sRepo').value.trim());
   store.set('voice', sel.value);
   store.set('langs', selectedLangs().join('، '));
+  if (store.get('lock.mode') === 'prf') sealSecrets();
 }
+$('lockToggle').addEventListener('click', async () => {
+  const out = $('lockStatus');
+  try {
+    if (lockEnabled()) {
+      if (!confirm('إيقاف قفل Face ID؟ سيُحفظ المفتاح والرمز دون تشفير.')) return;
+      await disableLock();
+    } else {
+      saveSettings();
+      out.textContent = 'أنتظر Face ID…';
+      await enableLock();
+    }
+  } catch (e) {
+    out.textContent = '✗ ' + (e.name === 'NotAllowedError' ? 'أُلغي أو انتهت المهلة.' : e.message);
+    return;
+  }
+  showLock();
+});
 $('settingsBtn').addEventListener('click', () => { fillSettings(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
@@ -947,8 +1082,27 @@ $('testBtn').addEventListener('click', async () => {
   }
 });
 
+// القفل: عند الفتح، وبعد 5 دقائق في الخلفية (لا يقفل أثناء مكالمة)
+$('unlockBtn').addEventListener('click', async () => {
+  try { await unlock(); if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎'); }
+  catch (e) { $('lockError').textContent = e.name === 'NotAllowedError' ? 'لم يكتمل التحقق، حاول مرة أخرى.' : e.message; }
+});
+$('lockReset').addEventListener('click', async () => {
+  if (!confirm('مسح المفتاح والرمز المشفّرين وإيقاف القفل؟ ستدخلهما من جديد في الإعدادات.')) return;
+  memory.delete('key'); memory.delete('token');
+  await disableLock();
+  lock.locked = false;
+  $('lockScreen').hidden = true;
+  fillSettings(); dlg.showModal();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { lock.hiddenAt = Date.now(); return; }
+  if (lockEnabled() && !call.active && lock.hiddenAt && Date.now() - lock.hiddenAt > LOCK_AFTER_MS) lockNow();
+});
+if (lockEnabled()) lockNow();
+
 renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
+window.__nv = { lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
