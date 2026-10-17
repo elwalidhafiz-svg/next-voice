@@ -19,8 +19,8 @@ const VOICES = [
   ['Leda', 'Leda — نسائي شاب'],
   ['Zephyr', 'Zephyr — نسائي مشرق'],
 ];
-// Pending Approvals: نسخة تلقائية كل ساعتين بما ينتظر اعتماد الوليد (شيت المحتوى وشيت الفرص)
-const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md', '_System/Pending Approvals.md'];
+// Pending Approvals وWhatsApp Today: نسختان تلقائيتان من سكربت الماك (اعتمادات الشيتين، وملخص واتساب آخر 24 ساعة)
+const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md', '_System/Pending Approvals.md', '_System/WhatsApp Today.md'];
 const OPEN_LOOPS = '_System/Open Loops.md';
 
 // ---------- تخزين محلي دائم ----------

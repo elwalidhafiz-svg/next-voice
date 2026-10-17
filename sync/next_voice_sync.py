@@ -35,6 +35,9 @@ APPROVALS_EVERY_MIN = 120          # نسخة «ما ينتظر اعتمادك»
 APPROVALS_RETRY_MIN = 30           # بعد فشل
 APPROVALS_HOURS = range(8, 23)     # من 8 ص حتى 11 م بتوقيت الرياض
 JOBS_SHEET = "15Jihl4OMeHZNz8HqaZy50teiKXFLaVZyqu098bGHDvU"
+WA_DIGEST_REL = Path("_System") / "WhatsApp Today.md"
+WA_EVERY_MIN = 120                 # ملخص واتساب كل ساعتين نهاراً (APPROVALS_HOURS)
+WAKE_GAP_MIN = 60                  # فجوة أطول من هذا بين تشغيلين = الماك كان نائماً ← ملخص فوري
 TG_DIR = Path.home() / ".claude" / "channels" / "telegram"
 LAST_BATCH = Path(".next-voice") / "last_batch.json"
 CHANGES_MARK = "---التغييرات---"
@@ -548,6 +551,61 @@ def snapshot_approvals(force=False):
     log("حُدّث «ما ينتظر اعتمادك».")
 
 
+def whatsapp_digest(force=False):
+    """ملخص واتساب لآخر 24 ساعة من محادثات النطاق، يقرؤه نيكست الصوتي. لا يلمس Open Loops (تقرير المساء يفعل)."""
+    now = datetime.now(RIYADH)
+    state = load_state()
+    last = state.get("wa_attempt")
+    wait = APPROVALS_RETRY_MIN if state.get("wa_failed") else WA_EVERY_MIN
+    if not force:
+        if now.hour not in APPROVALS_HOURS:
+            return
+        if last and (now - datetime.fromisoformat(last)).total_seconds() < wait * 60:
+            return
+    prev_ok = state.get("wa_ok_at")  # آخر ملخص ناجح: ما قبله لا يُعاد تفريغه
+    if prev_ok and state.get("wa_full_day") != now.strftime("%Y-%m-%d") and now.hour >= 8:
+        prev_ok = None  # أول ملخص بعد 8 ص كل يوم يُبنى كاملاً من الصفر، فلا تتراكم أخطاء الدمج
+        state["wa_full_day"] = now.strftime("%Y-%m-%d")
+    state["wa_attempt"] = now.isoformat()
+    save_state(state)
+    prev_file = VAULT / WA_DIGEST_REL
+    prev_body = prev_file.read_text(encoding="utf-8").split("\n\n", 3)[-1] if prev_file.exists() and prev_ok else ""
+    incremental = (f"""
+- **تحديث تدريجي:** الملخص السابق (حتى {human_when(prev_ok)}) أدناه. اقرأ وفرّغ فقط الرسائل والفويسات الأحدث منه، ثم ادمجها معه: احذف ما تجاوز 24 ساعة. **بنود «ينتظر ردك» السابقة تبقى كما هي**، ولا يُحذف منها بند إلا إن وُجدت في تلك المحادثة رسالة جديدة من الوليد بعد وقت الملخص السابق ترد عليه فعلاً.
+<الملخص السابق>
+{prev_body}
+</الملخص السابق>""" if prev_body else "")
+    prompt = f"""مهمة قراءة فقط: لا تعدّل أي ملف في الـ Vault ولا تكتب في أي مكان، عدا مجلد مؤقت تنشئه بـ mktemp لنسخة قاعدة واتساب وتفريغ الفويسات، **واحذفه في النهاية**.
+- اقرأ `_System/Assistant People.md` (جدول «نطاق المتابعة» = المحادثات المسموحة فقط، ودليل الأسماء والصفات)، وقسم «المصادر» في `_System/Telegram Assistant/CLAUDE.md` لطريقة قراءة واتساب (نسخ القاعدة إلى مجلد مؤقت، التوقيت، تحديد المرسل، تفريغ الفويسات المنزّلة بالأداة المذكورة).
+- اقرأ رسائل آخر 24 ساعة في محادثات النطاق فقط. الآن: {human_now()} بتوقيت الرياض.
+- أخرج Markdown فقط بلا مقدمة، 3500 حرف كحد أقصى، بالفصحى وبروح `_System/Report Format.md` (قصير، الاسم وحده، تواريخ بشرية، بلا تفاصيل تقنية ولا أرقام مستندات ولا كلمات مرور أو رموز تحقق):
+## ينتظر ردك
+- <الاسم> (<المحادثة إن لزم>): <ماذا يريد> — <متى>
+## الجديد في كل محادثة
+### <المحادثة>
+- <من>: <ماذا قال أو أرسل باختصار> — <متى>
+(المحادثة التي لا جديد فيها لا تظهر. إن لم يوجد شيء في القسم الأول فاكتب تحته «- لا شيء»)
+- فويس لم يُنزَّل على الماك: «فويس لم يُنزَّل». ما لم يتضح: «غير واضح». لا اختلاق.
+- ردك هو الملخص وحده: لا تكتب بعده أي ملاحظة عن عملك أو الملفات أو المجلدات.{incremental}"""
+    try:
+        body = claude_print(prompt)
+        if "## ينتظر ردك" not in body:
+            raise RuntimeError("شكل غير متوقع: " + body[:200])
+        # احتياط: أي ملاحظة بعد الملخص (فاصل ---) تُحذف
+        body = body[body.index("## ينتظر ردك"):].split("\n---", 1)[0]
+    except Exception as e:  # noqa: BLE001 — يُعاد بعد APPROVALS_RETRY_MIN
+        state = load_state(); state["wa_failed"] = True; save_state(state)
+        log("فشل ملخص واتساب:", e)
+        return
+    head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
+            f"# واتساب — آخر 24 ساعة\n\nملف تلقائي يكتبه سكربت نيكست الصوتي عند استيقاظ الماك وكل ساعتين نهاراً، من محادثات النطاق في [[Assistant People]]. لا تعدّله يدوياً؛ Open Loops يحدّثه تقرير المساء.\n"
+            f"آخر تحديث: {human_day(now.date(), now.date())} {human_time(now)}.\n\n")
+    (VAULT / WA_DIGEST_REL).write_text(head + body.strip() + "\n", encoding="utf-8")
+    state = load_state(); state.update(wa_failed=False, wa_ok_at=now.strftime("%Y-%m-%d %H:%M")); save_state(state)
+    publish("voice: whatsapp digest")
+    log("حُدّث ملخص واتساب.")
+
+
 def recover_stuck():
     """طلب بقي «working» لأن التشغيل انقطع أثناء تنفيذه (غطاء الماك أُغلق مثلاً): يعود pending، أو failed بعد MAX_ATTEMPTS."""
     changed = False
@@ -593,6 +651,14 @@ def main():
     print(f"الفهرس: {count} ملاحظة{' (محدّث)' if changed else ''} → {out}")
     if "--index-only" in args:
         return 0
+    # استيقاظ الماك: فجوة طويلة منذ آخر تشغيل (launchd لا يعمل والماك نائم)
+    state = load_state()
+    prev = state.get("last_run")
+    woke = bool(prev) and (datetime.now(timezone.utc) - datetime.fromisoformat(prev)).total_seconds() > WAKE_GAP_MIN * 60
+    state["last_run"] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
+    if woke:
+        log("الماك استيقظ بعد نوم — ملخص واتساب فوري.")
     status = sync()
     try:
         watch_telegram_next()
@@ -607,6 +673,10 @@ def main():
             snapshot_approvals()
         except Exception as e:  # noqa: BLE001
             log("خطأ في «ما ينتظر اعتمادك»:", e)
+        try:
+            whatsapp_digest(force=woke)
+        except Exception as e:  # noqa: BLE001
+            log("خطأ في ملخص واتساب:", e)
     return status
 
 
