@@ -314,13 +314,15 @@ def execute(path, meta, body):
     try:
         item["answer"], item["changes"] = run_claude(rel, body, item["requested"])
     except Exception as e:  # noqa: BLE001 — أي فشل يُبلَّغ للوليد ولا يوقف المزامنة
-        set_fields(path, status="failed")
+        set_fields(path, status="failed", notified="no")
         with path.open("a", encoding="utf-8") as f:
             f.write(f"\n## فشل التنفيذ\n{e}\n")
         item["error"] = str(e)[:300]
         log("فشل:", e)
     else:
-        set_fields(path, status="answered", answered=datetime.now().strftime("%Y-%m-%d %H:%M"))
+        # العلامة تُكتب مع الرد نفسه: إن انقطع التشغيل قبل الإرسال (نوم الماك مثلاً) يُعاد في الدورة التالية
+        flag = {"notified": "no"} if is_action(item) else {"heard": "no"}
+        set_fields(path, status="answered", answered=datetime.now().strftime("%Y-%m-%d %H:%M"), **flag)
         with path.open("a", encoding="utf-8") as f:
             f.write(f"\n## ردّ نيكست الكبير\n{item['answer']}\n\n## ما غيّرته\n{item['changes']}\n")
     publish("voice: request done")
@@ -351,35 +353,56 @@ def render(item, n=None):
     return "\n".join(lines)
 
 
-def process_big_requests():
-    pending = big_requests("pending")
-    if not pending:
+def item_from_file(path, meta, body):
+    """يعيد بناء بند الإشعار من ملف الطلب (للإرسال بعد انقطاع)."""
+    def section(name):
+        _, found, rest = body.partition(f"## {name}\n")
+        return rest.split("\n## ", 1)[0].strip() if found else ""
+    item = {
+        "rel": path.relative_to(VAULT).as_posix(),
+        "title": (re.search(r"^# (.+)$", body, re.M) or [None, path.stem])[1],
+        "requested": meta.get("created", "؟"),
+        "age": age_minutes(meta),
+    }
+    if meta.get("status") == "failed":
+        item["error"] = section("فشل التنفيذ")[:300] or "خطأ غير معروف"
+    else:
+        item["answer"], item["changes"] = section("ردّ نيكست الكبير"), section("ما غيّرته") or "لا شيء"
+    return item
+
+
+def notify_pending():
+    """يرسل كل فعل لم يُبلَّغ عنه بعد (notified: no) في رسالة واحدة، ويعلّمه بعد نجاح الإرسال فقط."""
+    todo = []
+    for path in sorted((VAULT / "Inbox").glob("*.md")):
+        meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if meta.get("kind") == BIG_KIND and meta.get("notified") == "no":
+            todo.append((path, item_from_file(path, meta, body)))
+    if not todo:
         return
-    actions = []
-    for path, meta, body in pending:
+    items = [it for _, it in todo]
+    save_batch(items)
+    if len(items) == 1 and items[0]["age"] <= STALE_MIN:
+        it = items[0]
+        undo = "" if "error" in it or no_changes(it.get("changes", "")) else "\n\nللإلغاء: «الغِها»."
+        text = render(it) + undo
+    else:
+        late = any(it["age"] > STALE_MIN for it in items)
+        head = "🎙️ فتحتَ الماك، فنفّذتُ ما طلبته صوتياً" if late else "🎙️ نفّذتُ ما طلبته صوتياً"
+        text = "\n\n".join([f"{head} ({len(items)}):", *[render(it, i + 1) for i, it in enumerate(items)],
+                              "لإلغاء أيٍّ منها قل: «الغِ <رقمه>»."])
+    tg_send(text)  # إن فشل يبقى notified: no ويُعاد في الدورة التالية
+    for path, _ in todo:
+        set_fields(path, notified="yes")
+    publish("voice: notified")
+    log("أُبلغ على تيليجرام:", len(items))
+
+
+def process_big_requests():
+    for path, meta, body in big_requests("pending"):
         item = execute(path, meta, body)
-        if not is_action(item):
-            # سؤال فقط: الرد في الملف، ونيكست الصوتي يخبره به في المكالمة التالية
-            set_fields(path, heard="no")
-            log("سؤال — يُسمع في المكالمة التالية:", path.name)
-            continue
-        if item["age"] <= STALE_MIN:
-            save_batch([item])
-            undo = "" if "error" in item or no_changes(item.get("changes", "")) else "\n\nللإلغاء: «الغِها»."
-            tg_send(render(item) + undo)
-            log("أُرسل الرد:", path.name)
-        else:
-            actions.append(item)
-    publish("voice: requests processed")
-    if actions:
-        # الماك كان مغلقاً: رسالة واحدة بكل ما نُفّذ من أفعال
-        save_batch(actions)
-        publish("voice: delayed batch")
-        parts = [f"🎙️ فتحتَ الماك، فنفّذتُ ما طلبته صوتياً ({len(actions)}):"]
-        parts += [render(it, i + 1) for i, it in enumerate(actions)]
-        parts.append("لإلغاء أيٍّ منها قل: «الغِ <رقمه>».")
-        tg_send("\n\n".join(parts))
-        log("أُرسل ملخص المتأخر:", len(actions))
+        log("فعل — سيُبلَّغ:" if is_action(item) else "سؤال — يُسمع في المكالمة التالية:", path.name)
+    notify_pending()
 
 
 def main():
