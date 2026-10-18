@@ -399,9 +399,10 @@ function whatsappDone() { return boardSection('يبدو أنه أُنجز الي
 function openLoopsLines() {
   const n = vault.byPath.get(OPEN_LOOPS);
   const t = n ? n.text : '';
-  const a = t.indexOf('## مفتوح'), b = t.indexOf('## مُغلق');
-  const pick = (s) => s.split('\n').filter((l) => l.startsWith('- '));
-  return { open: pick(t.slice(a === -1 ? 0 : a, b === -1 ? undefined : b)), closed: b === -1 ? [] : pick(t.slice(b)) };
+  // كل قسم حتى القسم التالي: «مقترحات» بين «مفتوح» و«مُغلق» ليست بنوداً مفتوحة
+  const section = (h) => { const i = t.indexOf(h); if (i === -1) return ''; const j = t.indexOf('\n## ', i + h.length); return t.slice(i, j === -1 ? undefined : j); };
+  const pick = (s) => s.split('\n').filter((l) => l.startsWith('- ') && !l.startsWith('- لا شيء'));
+  return { open: pick(section('## مفتوح')), closed: pick(section('## مُغلق')) };
 }
 // وزن الكلمة بندرتها (IDF) بين كل بنود Open Loops: الأسماء والكلمات المميزة تحسم، والعامة («تصاميم»، «غير») لا.
 const ITEM_STOP = new Set(['غير', 'شي', 'شيء', 'حاجه', 'موجود', 'اطلاقا', 'كل', 'بعد', 'قبل', 'اليوم', 'بكره', 'امس', 'خلاص', 'خلص', 'خلصت', 'تم', 'اقفل', 'اقفلها', 'مهمه', 'بند', 'بتاع', 'بتاعه', 'بتاعت', 'دي', 'ده', 'هذا', 'هذه']);
@@ -429,7 +430,7 @@ function verifyItem(item) {
   const bo = o[0]?.s || 0, bc = c[0]?.s || 0;
   if (bc > 0 && bc > bo * 1.2) return { state: 'closed', line: c[0].l };
   if (bo < 1.5) return { state: 'missing' }; // لا كلمة مميزة واحدة تطابق
-  if (o.length > 1 && o[1].s >= bo * 0.85) return { state: 'ambiguous', candidates: o.slice(0, 3).map((x) => x.l.slice(2, 140)) };
+  if (o.length > 1 && o[1].s >= bo * 0.85) return { state: 'ambiguous', candidates: o.slice(0, 3).map((x) => spoken(x.l.slice(2))) }; // بلا السياق المشترك (مثل «خطة الأسبوع (…)») حتى يفرّق بينها
   const line = o[0].l.slice(2);
   // الدليل فقط مما قررت لوحة اليوم أنه «يبدو أنه أُنجز» (نيكست الكبير طابقه بالبند)، لا مطابقة كلمات عابرة
   const waLines = whatsappDone().split('\n').filter((l) => l.startsWith('- '));
@@ -699,6 +700,9 @@ function systemInstruction() {
       const u = unheardAnswers();
       return u.length ? [`===== ردود جديدة من نيكست الكبير لم يسمعها الوليد =====\n${u.map((x, i) => `${i + 1}) ${x.title}:\n${x.answer}`).join('\n\n')}`] : [];
     })(),
+    call.firstToday
+      ? '===== أول مكالمة اليوم =====\nهذه أول مكالمة للوليد اليوم: بعد ما يطلبه، اذكر بجملة واحدة عدد البنود «بلا موعد (يحتاج قرارك)» وعدد «مقترحات للـ Open Loops» في اللوحة، واسأله إن كان يريد أن تمرّا عليها الآن.'
+      : 'ليست أول مكالمة اليوم: لا تذكر البنود بلا موعد ولا المقترحات من نفسك؛ فقط إن سأل.',
     `آخر تحديث للفهرس: ${vault.built || 'غير معروف'}.`,
   ].join('\n\n');
 }
@@ -851,7 +855,7 @@ function u8ToB64(u8) {
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
   started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null,
-  lastUser: 0, lastModel: 0, modelText: '', news: [], offered: [], pollTimer: 0, idleTimer: 0,
+  lastUser: 0, lastModel: 0, modelText: '', firstToday: false, news: [], offered: [], pollTimer: 0, idleTimer: 0,
 };
 
 // أُعلن في هذه المكالمة ولم يُسمع بعد: لا يُعلن ثانيةً فيها، ويبقى heard: no حتى answers_heard
@@ -968,8 +972,11 @@ async function startCall() {
         }
       }
     });
+    // أول مكالمة اليوم (تُحسب قبل الاتصال لأن تعليمات الجلسة تُبنى فيه)
+    call.firstToday = store.get('call.day') !== riyadhNow().date;
     await connect();
     call.started = Date.now();
+    store.set('call.day', riyadhNow().date);
     const unheard = unheardAnswers();
     if (unheard.length) {
       call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) ابدأ بإخبار الوليد باختصار أن عنده ${unheard.length === 1 ? 'رداً جديداً' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعها. بعد أن تقرأها عليه، أو إن رفض سماعها أصلاً، استدعِ answers_heard.` });
