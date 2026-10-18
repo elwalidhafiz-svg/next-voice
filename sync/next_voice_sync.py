@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -424,8 +425,23 @@ def execute(path, meta, body):
     set_fields(path, status="working", working_since=datetime.now(timezone.utc).isoformat(timespec="seconds"), attempts=attempts)
     publish("voice: working on request")
     log("ينفّذ:", path.name)
+    wall0, mono0 = time.time(), time.monotonic()
     try:
         item["answer"], item["changes"] = run_claude(rel, body, item["requested"], meta.get("type") or "سؤال")
+    except subprocess.TimeoutExpired as e:
+        # الوقت الفعلي (الساعة) يجري والماك نائم، والمهلة تُحسب به؛ أما monotonic فيتوقف أثناء النوم.
+        # فرق كبير بينهما = نام الماك أثناء التنفيذ (غطاء مغلق)، فالطلب يُعاد لا يُعلَن فشله.
+        slept = (time.time() - wall0) - (time.monotonic() - mono0) > 120
+        if slept and attempts < MAX_ATTEMPTS:
+            set_fields(path, status="pending")
+            log("نام الماك أثناء التنفيذ — يُعاد الطلب:", path.name)
+            publish("voice: retry after sleep")
+            return item
+        set_fields(path, status="failed", notified="no")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"\n## فشل التنفيذ\nتجاوز {CLAUDE_TIMEOUT // 60} دقيقة دون رد.\n")
+        item["error"] = f"تجاوز {CLAUDE_TIMEOUT // 60} دقيقة دون رد"
+        log("فشل (مهلة):", path.name)
     except Exception as e:  # noqa: BLE001 — أي فشل يُبلَّغ للوليد ولا يوقف المزامنة
         set_fields(path, status="failed", notified="no")
         with path.open("a", encoding="utf-8") as f:
@@ -555,9 +571,29 @@ def snapshot_approvals(force=False):
     log("حُدّث «ما ينتظر اعتمادك».")
 
 
+def open_loop_items():
+    """بنود قسم «مفتوح» في Open Loops (أسطر تبدأ بـ «- »)."""
+    try:
+        text = (VAULT / "_System" / "Open Loops.md").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    section = text.split("## مفتوح", 1)[-1].split("## مُغلق", 1)[0]
+    return [l for l in section.splitlines() if l.startswith("- ")]
+
+
+def board_open_count(body):
+    """عدد البنود في قسمَي «مفتوح الآن» و«يبدو أنه أُنجز اليوم» (بلا «- لا شيء»)."""
+    n = 0
+    for part in body.split("\n## ")[0:]:
+        head = part.lstrip("# ").split("\n", 1)[0]
+        if head.startswith("مفتوح الآن") or head.startswith("يبدو أنه أُنجز اليوم"):
+            n += sum(1 for l in part.splitlines() if l.startswith("- ") and not l.startswith("- لا شيء"))
+    return n
+
+
 def today_board(force=False):
-    """«لوحة اليوم»: صورة واحدة ليوم الوليد يجهّزها نيكست الكبير من Open Loops وواتساب وما ينتظر اعتماده،
-    فيقرؤها نيكست الصوتي دون أن يوفّق بين مصادر. لا تلمس Open Loops (تقرير المساء يفعل) ولا تغلق شيئاً."""
+    """«لوحة اليوم»: Open Loops كاملة (كل بند مفتوح)، وفوقها ما تغيّر في واتساب (ملاحظة على البند، وما يبدو أنه أُنجز،
+    والتزامات جديدة لم تُسجَّل)، والاعتمادات — فيقرؤها نيكست الصوتي دون أن يوفّق بين مصادر. لا تلمس Open Loops (تقرير المساء يفعل) ولا تغلق شيئاً."""
     now = datetime.now(RIYADH)
     state = load_state()
     last = state.get("wa_attempt")
@@ -574,12 +610,15 @@ def today_board(force=False):
     state["wa_attempt"] = now.isoformat()
     save_state(state)
     prev_file = VAULT / TODAY_REL
-    prev_body = prev_file.read_text(encoding="utf-8").split("\n\n", 3)[-1] if prev_file.exists() and prev_ok else ""
+    # جسم اللوحة السابقة كاملاً: من أول قسم «## » (التقسيم على الأسطر الفارغة كان يأخذ آخر قسم فقط)
+    prev_text = prev_file.read_text(encoding="utf-8") if prev_file.exists() and prev_ok else ""
+    prev_body = prev_text[prev_text.index("\n## ") + 1:] if "\n## " in prev_text else ""
     incremental = (f"""
 - **تحديث تدريجي لواتساب:** اللوحة السابقة (حتى {human_when(prev_ok)}) أدناه. في واتساب اقرأ وفرّغ فقط الرسائل والفويسات الأحدث منها، وخذ ما قبلها من اللوحة السابقة (واحذف ما تجاوز 24 ساعة). بنود «ينتظر ردك في واتساب» السابقة تبقى إلا إن ردّ عليها الوليد برسالة جديدة. أما Open Loops والاعتمادات فاقرأها من جديد كاملة.
 <اللوحة السابقة>
 {prev_body}
 </اللوحة السابقة>""" if prev_body else "")
+    open_count = len(open_loop_items())
     prompt = f"""مهمة قراءة فقط: لا تعدّل أي ملف في الـ Vault ولا تكتب في أي مكان، عدا مجلد مؤقت تنشئه بـ mktemp لنسخة قاعدة واتساب وتفريغ الفويسات، **واحذفه في النهاية**. الآن: {human_now()} بتوقيت الرياض.
 اقرأ:
 1. `_System/Open Loops.md` كاملاً (قسما «مفتوح» و«مُغلق»).
@@ -587,39 +626,51 @@ def today_board(force=False):
 3. واتساب: رسائل آخر 24 ساعة في محادثات النطاق فقط — النطاق والأسماء في `_System/Assistant People.md`، وطريقة القراءة (نسخ القاعدة، التوقيت، المرسل، تفريغ الفويسات المنزّلة) في قسم «المصادر» في `_System/Telegram Assistant/CLAUDE.md`.
 4. طلبات نيكست الصوتي اليوم في `Inbox/` (ملفات `source: نيكست الصوتي`) لتعرف ما طلب الوليد إغلاقه أو إضافته اليوم.
 
-ثم أخرج «لوحة اليوم»: Markdown فقط بلا مقدمة، 5000 حرف كحد أقصى، بالفصحى وبروح `_System/Report Format.md` (قصير، الاسم وحده، تواريخ بشرية، بلا تفاصيل تقنية ولا أرقام مستندات ولا كلمات مرور). كل بند يُذكر في قسم واحد فقط. بهذا الشكل حرفياً، والقسم الفارغ تحته «- لا شيء»:
-## يحتاجك الآن
-- <فعل مطلوب منه هو>: <ماذا> — <الموعد أو التأخير>
-(من بنود Open Loops المفتوحة التي تحتاج فعله، ومن الاعتمادات بسطر لكل نوع، الأهم أولاً، 7 كحد أقصى)
-## ينتظر ردك في واتساب
-- <الاسم>: <ماذا يريد> — <متى>
+ثم أخرج «لوحة اليوم»: Markdown فقط بلا مقدمة، 7000 حرف كحد أقصى، بالفصحى وبروح `_System/Report Format.md` (سطر قصير لكل بند، الاسم وحده، تواريخ بشرية، بلا تفاصيل تقنية ولا أرقام مستندات ولا كلمات مرور).
+**الأساس Open Loops كاملة، وواتساب طبقة فوقها:** في قسم «مفتوح» الآن {open_count} بنداً، ويجب أن يظهر كل واحد منها في اللوحة مرة واحدة بالضبط: في أحد قسمَي «مفتوح الآن»، أو في «يبدو أنه أُنجز اليوم». لا اختصار ولا «و<ن> بنود أخرى» ولا حد أقصى. التقسيم **بصاحب الفعل التالي**: ما ينتظر فعلاً من الوليد نفسه (يرسل، يحصّل، يحدد، يرد، يقرر، ينفّذ) في «عليك» حتى لو كان بلا موعد؛ وما ينتظر غيره (منفّذ، عميل، مدير) في «عند غيرك». بهذا الشكل حرفياً، والقسم الفارغ تحته «- لا شيء»:
+## مفتوح الآن — عليك
+- <الفعل المطلوب منه>: <ماذا> — <الموعد أو التأخير، أو «بلا موعد، مفتوح منذ …»>
+(المتأخر أولاً، ثم ما موعده اليوم، ثم الأقرب موعداً، ثم ما بلا موعد الأقدم أولاً)
+## مفتوح الآن — عند غيرك
+- <الاسم>: <ماذا> — <الموعد أو التأخير، أو «بلا موعد، مفتوح منذ …»>
+(بالترتيب نفسه)
 ## يبدو أنه أُنجز اليوم (ينتظر تأكيدك قبل الإغلاق)
 - <نص البند كما هو في Open Loops، مختصراً> ← <الدليل من الرسائل> — <متى>
-(فقط بنود «مفتوح» التي تدل رسائل اليوم بوضوح على أنها سُلّمت أو حُسمت أو دُفعت. عند الشك لا تذكره)
+(بنود «مفتوح» التي تدل رسائل آخر 24 ساعة بوضوح على أنها سُلّمت أو حُسمت أو دُفعت. عند الشك يبقى البند في «مفتوح الآن» مع ملاحظة واتساب)
+## التزامات جديدة من واتساب (لم تُسجَّل في Open Loops)
+- <على من>: <الالتزام> — <الموعد إن ذُكر> ← <الدليل باختصار>
+(وعد أو طلب أو اتفاق جديد في رسائل آخر 24 ساعة، له صاحب وشيء محدد، وغير موجود في «مفتوح». بما فيها ما طُلب منه هو. لا تكرر ما في Open Loops)
+## ينتظر ردك في واتساب
+- <الاسم>: <ماذا يريد> — <متى>
+## اعتمادات معلّقة
+- <النوع>: <العدد> (سطر لكل نوع من Pending Approvals؛ مثل «أفكار محتوى: 6»)
 ## أُنجز ومُغلق
 - <البند> — <متى أُغلق>
 (ما في «مُغلق» بتاريخ اليوم أو أمس)
-## عند الفريق
-- <الاسم>: <ماذا> — <الموعد>
-(بنود «مفتوح» على غيره: المتأخر وما موعده اليوم أو بكرة فقط، ثم سطر «و<ن> بنود أخرى في موعدها»)
 ## الجديد في واتساب
 ### <المحادثة>
 - <من>: <ماذا باختصار> — <متى>
-(المحادثة التي لا جديد فيها لا تظهر)
+(المحادثة التي لا جديد فيها لا تظهر، وما ذُكر في الأقسام السابقة لا يُكرر هنا)
+- ملاحظة واتساب في آخر سطر البند في قسمَي «مفتوح الآن» تُضاف فقط إن كان في رسائل آخر 24 ساعة جديد عنه، بصيغة « · واتساب: ⏳ <وعد بموعد جديد>» أو « · واتساب: ⚠️ <تأخر أو مشكلة>» أو « · واتساب: 💬 <جديد آخر>». وإلا فلا شيء.
 - فويس لم يُنزَّل على الماك: «فويس لم يُنزَّل». ما لم يتضح: «غير واضح». لا اختلاق.
 - ردك هو اللوحة وحدها: لا تكتب بعدها أي ملاحظة عن عملك أو الملفات أو المجلدات.{incremental}"""
     try:
         body = claude_print(prompt)
-        if "## يحتاجك الآن" not in body or "## يبدو أنه أُنجز اليوم" not in body:
+        if "## مفتوح الآن — عليك" not in body or "## يبدو أنه أُنجز اليوم" not in body:
             raise RuntimeError("شكل غير متوقع: " + body[:200])
-        body = body[body.index("## يحتاجك الآن"):].split("\n---", 1)[0]
+        body = body[body.index("## مفتوح الآن — عليك"):].split("\n---", 1)[0]
+        shown = board_open_count(body)
+        open_count = len(open_loop_items())  # قد يُغلق بند أثناء التوليد (طلب صوتي)
+        if shown < open_count:
+            log(f"تنبيه: اللوحة تذكر {shown} من {open_count} بنداً مفتوحاً.")
     except Exception as e:  # noqa: BLE001 — يُعاد بعد APPROVALS_RETRY_MIN
         state = load_state(); state["wa_failed"] = True; save_state(state)
         log("فشل لوحة اليوم:", e)
         return
     head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
-            f"# لوحة اليوم\n\nملف تلقائي يجهّزه نيكست الكبير عند استيقاظ الماك وكل ساعتين نهاراً من [[Open Loops]] وواتساب و[[Pending Approvals]]، لنيكست الصوتي. لا تعدّله يدوياً؛ Open Loops يحدّثه تقرير المساء وما يؤكده الوليد.\n"
-            f"آخر تحديث: {human_day(now.date(), now.date())} {human_time(now)}.\n\n")
+            f"# لوحة اليوم\n\nملف تلقائي يجهّزه نيكست الكبير عند استيقاظ الماك وكل ساعتين نهاراً: [[Open Loops]] كاملة، وفوقها ما تغيّر في واتساب، و[[Pending Approvals]]، لنيكست الصوتي. لا تعدّله يدوياً؛ Open Loops يحدّثه تقرير المساء وما يؤكده الوليد.\n"
+            f"آخر تحديث: {human_day(now.date(), now.date())} {human_time(now)}. "
+            f"في Open Loops {open_count} بنداً مفتوحاً، وتذكر اللوحة {shown} منها.\n\n")
     (VAULT / TODAY_REL).write_text(head + body.strip() + "\n", encoding="utf-8")
     state = load_state(); state.update(wa_failed=False, wa_ok_at=now.strftime("%Y-%m-%d %H:%M")); save_state(state)
     publish("voice: today board")
