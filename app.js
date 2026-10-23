@@ -903,6 +903,18 @@ const TOOLS = [{
 }];
 
 const MAX_NOTE = 9000;
+// ملف أطول من الحد: أوله (الحالة والأشخاص) + آخره (أحدث السجل يُكتب في الآخر)، والقطع عند حدود الأسطر
+function noteForVoice(text) {
+  if (text.length <= MAX_NOTE) return { text, truncated: false };
+  const HEAD = 3200, TAIL = MAX_NOTE - HEAD;
+  const head = text.slice(0, HEAD).replace(/\n[^\n]*$/, '');
+  const tail = text.slice(-TAIL).replace(/^[^\n]*\n/, '');
+  const skipped = text.length - head.length - tail.length;
+  return {
+    text: `${head}\n\n[… حُذف من الوسط ${skipped} حرفاً — لأي تفصيل فيه استعمل search_vault بكلمات محددة …]\n\n${tail}`,
+    truncated: true,
+  };
+}
 // تأكيد إلزامي في الكود: أي فعل لا يُنفَّذ عند استدعاء الأداة، بل يُعلَّق حتى يقول الوليد «أيوه» بصوته
 // (أو يكتبها). النموذج يسأل، والتطبيق نفسه ينفّذ أو يلغي حسب رده.
 const GATED = (name, args) => name === 'mark_done' || name === 'add_to_inbox' || (name === 'ask_big_next' && args.type !== 'سؤال');
@@ -952,7 +964,7 @@ async function runTool(name, args = {}, confirmed = false) {
     case 'read_note': {
       const n = findNote(args.name || '');
       if (!n) return { error: 'الملف غير موجود', suggestions: searchVault(args.name || '', 3).map((x) => x.path) };
-      return { path: n.path, text: n.text.slice(0, MAX_NOTE), truncated: n.text.length > MAX_NOTE };
+      return { path: n.path, ...noteForVoice(n.text) };
     }
     case 'open_loops': {
       const out = { text: openLoopsForVoice().slice(0, 16000) };
