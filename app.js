@@ -215,6 +215,7 @@ const settings = () => ({
   voice: store.get('voice', 'Orus'),
   langs: store.get('langs').trim() || DEFAULT_LANGS,
   barge: store.get('barge', 'on'),
+  taskCheck: store.get('taskCheck', 'on'),
 });
 
 // ---------- واجهة ----------
@@ -395,6 +396,70 @@ function boardSection(title) {
 }
 function whatsappDone() { return boardSection('يبدو أنه أُنجز اليوم'); }
 
+// ---------- «مهامي»: قائمة اليوم مرقّمة ----------
+// من قسم «موعده اليوم» في اللوحة، وبنود «تابع مهام <الشخص> لليوم» مفصولة بنداً بنداً،
+// فيقرؤها نيكست كما هي بلا اختصار، والتطبيق يتحقق بعد السرد (checkTasksSaid).
+function splitTop(s, seps) { // تقسيم خارج الأقواس فقط («هابي تايم (أ، وب)» بند واحد)
+  const out = [];
+  let depth = 0, cur = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if (!depth) {
+      const sep = seps.find((x) => s.startsWith(x, i));
+      if (sep) { if (cur.trim()) out.push(cur.trim()); cur = ''; i += sep.length - 1; continue; }
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+function taskText(line) {
+  return line.replace(/^- /, '').replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').split(' · واتساب:')[0].trim();
+}
+function boardCount(title) {
+  return boardSection(title).split('\n').filter((l) => l.startsWith('- ')).length;
+}
+function myTasks() {
+  const items = [];
+  for (const raw of boardSection('مفتوح الآن — موعده اليوم').split('\n')) {
+    if (!raw.startsWith('- ')) continue;
+    const line = taskText(raw);
+    const m = line.match(/^تابع مهام (.+?) لليوم:\s*(.*)$/);
+    if (!m) { items.push(line); continue; }
+    for (const seg of splitTop(m[2], ['؛'])) {
+      const late = /^و?المتأخر\s*:/.test(seg);
+      const body = seg.replace(/^و?المتأخر\s*:\s*/, '');
+      for (const sub of splitTop(body, ['، و', '، '])) {
+        if (/^لا شيء/.test(sub)) continue;
+        items.push(`متابعة ${m[1]}: ${sub.replace(/^و/, '')}${late ? ' — متأخر' : ''}`);
+      }
+    }
+  }
+  return items;
+}
+// كلمات كل بند المميزة (الأندر بين البنود تحسم؛ العامة والتواريخ لا).
+// CHECK_STOP معرّف بعد ITEM_STOP أدناه، ويُستعمل هنا وقت الاستدعاء فقط.
+function checkTerms(items) {
+  const words = items.map((it) => [...new Set(norm(it).split(/[^\p{L}]+/u).filter((w) => w.length >= 3 && !CHECK_STOP.has(w)))]);
+  const df = new Map();
+  for (const ws of words) for (const w of ws) df.set(w, (df.get(w) || 0) + 1);
+  return words.map((ws) => ws.sort((a, b) => (df.get(a) - df.get(b)) || (b.length - a.length)).slice(0, 4));
+}
+// فحص بعد السرد: بند لم تظهر أي كلمة من كلماته المميزة فيما قاله نيكست ← تذكير واحد (مفتاح «فحص اكتمال المهام»)
+function checkTasksSaid(now, idle) {
+  const c = call.check;
+  if (!c || !idle || !call.session || now - c.at < 8000) return;
+  const buf = norm(c.buf);
+  const missing = c.items.filter((it, i) => c.terms[i].length && !c.terms[i].some((t) => buf.includes(t)));
+  if (c.nudged || !missing.length) { call.check = null; return; }
+  c.nudged = true;
+  c.at = now;
+  call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) من قائمة المهام التي أعطتك إياها my_tasks لم تذكر بعد: ${missing.map((x) => '«' + x.slice(0, 80) + '»').join('، ')}. اذكرها الآن للوليد باختصار، إلا إن كان قد طلب منك التوقف عن السرد.` });
+  note('tool', `⚠️ لم يذكر ${missing.length} من البنود — ذُكّر`);
+}
+
 // قبل أي إغلاق: هل البند مفتوح فعلاً في Open Loops؟ وماذا يقول واتساب عنه؟
 function openLoopsLines() {
   const n = vault.byPath.get(OPEN_LOOPS);
@@ -406,6 +471,7 @@ function openLoopsLines() {
 }
 // وزن الكلمة بندرتها (IDF) بين كل بنود Open Loops: الأسماء والكلمات المميزة تحسم، والعامة («تصاميم»، «غير») لا.
 const ITEM_STOP = new Set(['غير', 'شي', 'شيء', 'حاجه', 'موجود', 'اطلاقا', 'كل', 'بعد', 'قبل', 'اليوم', 'بكره', 'امس', 'خلاص', 'خلص', 'خلصت', 'تم', 'اقفل', 'اقفلها', 'مهمه', 'بند', 'بتاع', 'بتاعه', 'بتاعت', 'دي', 'ده', 'هذا', 'هذه']);
+const CHECK_STOP = new Set([...ITEM_STOP, 'متاخر', 'منذ', 'اليوم', 'عليك', 'تابع', 'متابعه', 'مهام', 'لليوم', 'واتساب', 'يناير', 'فبراير', 'مارس', 'ابريل', 'مايو', 'يونيو', 'يوليو', 'اغسطس', 'سبتمبر', 'اكتوبر', 'نوفمبر', 'ديسمبر', 'السبت', 'الاحد', 'الاثنين', 'الثلاثاء', 'الاربعاء', 'الخميس', 'الجمعه', 'امس', 'غدا', 'بكره']);
 function itemTerms(q) {
   const out = new Set();
   for (const t of terms(q).filter((x) => !ITEM_STOP.has(x))) {
@@ -514,6 +580,11 @@ const TOOLS = [{
       description: 'البنود المفتوحة: الالتزامات والمواعيد والمستحقات غير المحصّلة لكل المشاريع.',
     },
     {
+      name: 'my_tasks',
+      // بلا parameters
+      description: 'حين يسأل الوليد عن مهامه أو ما عليه اليوم («إيه مهامي؟»، «إيه عليّا النهارده؟»): تعيد قائمة اليوم مرقّمة (موعده اليوم والمتأخر، وبنود المتابعة اليومية مفصولة بنداً بنداً). اقرأها كاملة بالترتيب دون إسقاط أي بند؛ التطبيق يتحقق بعد سردك.',
+    },
+    {
       name: 'add_to_inbox',
       description: 'سجّل ملاحظة أو فكرة أو قراراً في Inbox/ ليُعالَج لاحقاً. ليس لمهام To Do: أي مهمة تُرسل بـ ask_big_next لتُضاف فعلاً. استدعها فوراً دون أن تسأل؛ التطبيق يعلّقها ويعطيك جملة التأكيد.',
       parameters: {
@@ -609,6 +680,21 @@ async function runTool(name, args = {}, confirmed = false) {
     }
     case 'open_loops':
       return { text: openLoopsForVoice().slice(0, 16000) };
+    case 'my_tasks': {
+      const items = myTasks();
+      call.check = settings().taskCheck !== 'off' && items.length
+        ? { items, terms: checkTerms(items), buf: '', at: Date.now(), nudged: false }
+        : null;
+      return {
+        count: items.length,
+        items: items.map((x, i) => `${i + 1}) ${x}`),
+        upcoming: boardCount('مفتوح الآن — قادم'),
+        undated: boardCount('مفتوح الآن — بلا موعد (يحتاج قرارك)'),
+        instruction: items.length
+          ? `قل أولاً «عندك ${items.length} بنود موعدها اليوم أو متأخرة»، ثم اقرأها كلها بالترتيب دون إسقاط أي بند، بجملة مسموعة قصيرة لكل بند. بعدها قل بجملة كم بنداً قادماً وكم بلا موعد (من upcoming وundated) واسأله إن كان يريدها.`
+          : 'لا بنود موعدها اليوم. قل ذلك بجملة، واذكر كم بنداً قادماً وكم بلا موعد (من upcoming وundated).',
+      };
+    }
     case 'mark_done': {
       addDoneToday(args.item);
       const r = await addToInbox({ title: `إغلاق: ${args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)`, kind: BIG_KIND, type: 'فعل' });
@@ -854,7 +940,7 @@ function u8ToB64(u8) {
 // ---------- المكالمة ----------
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
-  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null,
+  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null, check: null,
   lastUser: 0, lastModel: 0, modelText: '', firstToday: false, news: [], offered: [], pollTimer: 0, idleTimer: 0,
 };
 
@@ -928,6 +1014,7 @@ function announceIfIdle() {
     call.session.sendRealtimeInput({ text: '(تنبيه من النظام، لا تقرأه) الوليد ردّ على سؤال التأكيد. استدعِ confirm_action الآن ولا تقل شيئاً قبل نتيجتها.' });
   }
   const idle = audio.sources.size === 0 && now - call.lastUser > 4000 && now - call.lastModel > 2500;
+  checkTasksSaid(now, idle);
   if (!call.news.length || !call.session || !idle) return;
   const list = call.news.splice(0);
   const body = list.map((x, i) => `${i + 1}) ${x.title}:\n${x.answer}`).join('\n\n');
@@ -960,6 +1047,7 @@ async function startCall() {
   call.handle = null;
   call.retries = 0;
   call.modelText = '';
+  call.check = null;
   ui.orb.disabled = true;
   setStatus('أحمّل العقل الثاني…', 'busy');
   try {
@@ -1081,6 +1169,7 @@ async function onMessage(m, ref) {
   }
   if (sc.outputTranscription?.text) {
     call.modelText = (call.modelText + ' ' + sc.outputTranscription.text).slice(-600);
+    if (call.check) call.check.buf = (call.check.buf + ' ' + sc.outputTranscription.text).slice(-8000);
     say('next', sc.outputTranscription.text);
   }
   if (sc.turnComplete) bubble = { role: null, el: null };
@@ -1091,6 +1180,7 @@ function toolLabel(name, args = {}) {
     case 'search_vault': return `🔎 يبحث: ${args.query || ''}`;
     case 'read_note': return `📄 يقرأ: ${args.name || ''}`;
     case 'open_loops': return '📋 يقرأ البنود المفتوحة';
+    case 'my_tasks': return '🗒️ مهام اليوم';
     case 'mark_done': return `✔️ انتهى: ${args.item || ''}`;
     case 'add_to_inbox': return `✍️ يسجّل: ${args.title || ''}`;
     case 'ask_big_next': return `📨 إلى نيكست الكبير: ${args.title || ''}`;
@@ -1325,7 +1415,13 @@ function showBarge() {
   $('bargeToggle').classList.toggle('on', !on);
 }
 $('bargeToggle').addEventListener('click', () => { store.set('barge', settings().barge === 'off' ? 'on' : 'off'); showBarge(); });
-$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); dlg.showModal(); });
+function showTaskCheck() {
+  const on = settings().taskCheck !== 'off';
+  $('taskCheckToggle').textContent = on ? 'مفعّل — يذكّره بما أسقطه من السرد' : 'مُطفأ';
+  $('taskCheckToggle').classList.toggle('on', !on);
+}
+$('taskCheckToggle').addEventListener('click', () => { store.set('taskCheck', settings().taskCheck === 'off' ? 'on' : 'off'); showTaskCheck(); });
+$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
 for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
@@ -1367,4 +1463,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers };
+window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid };
