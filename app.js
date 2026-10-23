@@ -450,14 +450,14 @@ function checkTerms(items) {
 // فحص بعد السرد: بند لم تظهر أي كلمة من كلماته المميزة فيما قاله نيكست ← تذكير واحد (مفتاح «فحص اكتمال المهام»)
 function checkTasksSaid(now, idle) {
   const c = call.check;
-  if (!c || !idle || !call.session || now - c.at < 8000) return;
+  if (!c || !idle || !call.session || now - c.at < 20000) return;
   const buf = norm(c.buf);
   const missing = c.items.filter((it, i) => c.terms[i].length && !c.terms[i].some((t) => buf.includes(t)));
   if (c.nudged || !missing.length) { call.check = null; return; }
   c.nudged = true;
   c.at = now;
-  call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) من قائمة المهام التي أعطتك إياها my_tasks لم تذكر بعد: ${missing.map((x) => '«' + x.slice(0, 80) + '»').join('، ')}. اذكرها الآن للوليد باختصار، إلا إن كان قد طلب منك التوقف عن السرد.` });
-  note('tool', `⚠️ لم يذكر ${missing.length} من البنود — ذُكّر`);
+  call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه حرفياً) شبكة أمان: من مهام اليوم ${missing.length} بنود لم تُذكر بالاسم بعد: ${missing.map((x) => '«' + clip(x, 70) + '»').join('، ')}. في أول فرصة طبيعية — دون مقاطعة موضوع يتكلم فيه — قلها له بشكل عابر وبشري (مثل «وبالمناسبة، فيه كمان …») أو اسأله إن كان يريد سماع الباقي. لا تعدّدها آلياً ولا تكرر ما قيل.` });
+  note('tool', `⚠️ ${missing.length} بنود لم تُذكر — ذُكّر بها`);
 }
 
 // قبل أي إغلاق: هل البند مفتوح فعلاً في Open Loops؟ وماذا يقول واتساب عنه؟
@@ -645,10 +645,16 @@ const MAX_NOTE = 9000;
 const GATED = (name, args) => name === 'mark_done' || name === 'add_to_inbox' || (name === 'ask_big_next' && args.type !== 'سؤال');
 // سطر Open Loops ← جملة تُنطق: بلا [[ ]] ولا تفاصيل بعد «—» أو «؛»، وبحد 90 حرفاً
 function spoken(line) {
-  return (line || '').replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').split(/ — |؛/)[0].replace(/\s*\([^)]*\)/g, '').trim().slice(0, 90);
+  let s = (line || '').replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1');
+  const parts = s.split(' · ');
+  s = parts[parts.length - 1]; // يسقط سياق البند («فرق · وليد (مديره) · وليد خاص»)
+  s = s.replace(/^خطة محدّثة\s*(\([^)]*\))?\s*:\s*/, 'من خطة وليد: ');
+  s = s.split(/ — |؛/)[0].replace(/\s*\([^)]*\)/g, '').trim();
+  return s.length > 90 ? s.slice(0, 90).replace(/\s+\S*$/, '') + '…' : s; // قصّ عند حدود الكلمات لا وسط كلمة
 }
+function clip(s, n) { return (s || '').length > n ? s.slice(0, n).replace(/\s+\S*$/, '') + '…' : (s || ''); }
 function summarize(name, args) {
-  if (name === 'mark_done') return `هقفل: ${spoken(args.item)}${args._wa ? ' (واتساب: ' + args._wa.slice(0, 90) + ')' : ' (مش ظاهر في واتساب إنه خلص، بس كلامك هو المرجع)'}`;
+  if (name === 'mark_done') return `هقفل: ${spoken(args.item)}${args._wa ? ' (واتساب: ' + clip(args._wa, 90) + ')' : ' (مش ظاهر في واتساب إنه خلص، بس كلامك هو المرجع)'}`;
   if (name === 'add_to_inbox') return `هسجّل في الـ Inbox: ${args.title}`;
   return `هبعت لنيكست الكبير: ${args.request || args.title}`;
 }
@@ -661,11 +667,18 @@ async function runTool(name, args = {}, confirmed = false) {
     args = { ...args, item: v.line.slice(0, 160), evidence: args.evidence || (v.evidence ? 'حسب واتساب: ' + v.evidence : ''), _wa: v.evidence };
   }
   if (!confirmed && GATED(name, args)) {
+    if (call.pending) {
+      return {
+        status: 'فعل آخر ما زال ينتظر تأكيد الوليد — هذا الطلب لم يُسجَّل',
+        pending_now: summarize(call.pending.name, call.pending.args),
+        instruction: 'أكمل تأكيد الفعل الأول (اسأله واستدعِ confirm_action)، وبعد أن يُحسم أعد استدعاء هذه الأداة للفعل التالي. لا تعتبر الفعل التالي مُرسلاً.',
+      };
+    }
     call.pending = { name, args, at: Date.now(), heard: '', nudged: false };
     note('tool', `⏸ ينتظر تأكيدك: ${summarize(name, args)}`);
     return {
       status: 'بانتظار تأكيد الوليد — لم يُنفَّذ',
-      instruction: `اسأل الوليد الآن بجملة واحدة: «${summarize(name, args)}، صح؟» ثم اسكت. بعد رده (أياً كان) استدعِ confirm_action، ولا تقل «تم» أو «أرسلت» قبل نتيجتها.`,
+      instruction: `اسأله سؤالاً واحداً قصيراً بصيغتك الطبيعية معناه: «${summarize(name, args)}، صح؟» ثم اسكت — لا تقرأه قراءة آلية، لكن لا تغيّر المعنى. بعد رده (أياً كان) استدعِ confirm_action، ولا تقل «تم» أو «أرسلت» قبل نتيجتها.`,
     };
   }
   switch (name) {
@@ -691,13 +704,13 @@ async function runTool(name, args = {}, confirmed = false) {
         upcoming: boardCount('مفتوح الآن — قادم'),
         undated: boardCount('مفتوح الآن — بلا موعد (يحتاج قرارك)'),
         instruction: items.length
-          ? `غطِّ البنود كلها (${items.length}) بكلامك الطبيعي كزميل يلخّص اليوم: اجمع بنود الشخص الواحد في جملة متصلة، وقدّم الأهم، وانطقها بصيغة مسموعة. ممنوع التعداد الآلي: لا «أولاً/ثانياً» ولا قراءة أرقام أو قائمة. المهم ألا يسقط بند — التطبيق يتحقق بعدك ويذكّرك بما فاتك. في الختام جملة واحدة: كم بنداً قادماً وكم بلا موعد (من upcoming وundated)، وهل يريدها.`
+          ? `افتح كزميل يلخّص اليوم، لا كتقرير: جملة أو جملتان فيهما الصورة العامة — المتأخر الذي عليه هو بالاسم أولاً، والباقي مجموعاً بصاحبه وعدده (مثل «وفيه كام حاجة متأخرة بتتابعها مع وليد، وطارق عنده اتنين النهارده»). ثم اعرض عليه: تمشوا عليها واحدة واحدة، أو يسأل عمّا يهمه. ممنوع التعداد الآلي («أولاً/ثانياً») وقراءة القوائم. إن طلب الكل أو المرور عليها، فغطِّها كلها بكلام طبيعي. لا تختم الحديث عن المهام وفيه بند لم يُذكر ولم يعرض عليه سماعه — التطبيق يذكّرك بما بقي.`
           : 'لا بنود موعدها اليوم. قل ذلك بجملة، واذكر كم بنداً قادماً وكم بلا موعد (من upcoming وundated).',
       };
     }
     case 'mark_done': {
       addDoneToday(args.item);
-      const r = await addToInbox({ title: `إغلاق: ${args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)`, kind: BIG_KIND, type: 'فعل' });
+      const r = await addToInbox({ title: `إغلاق: ${args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)\nوإن كان البند سطر خطة أو متابعة يضم عدة أجزاء وما طُلب إغلاقه جزء منه فقط: أغلق الجزء المقصود وحده (احذفه من السطر واذكره في «مُغلق»)، وأبقِ باقي السطر مفتوحاً كما هو.`, kind: BIG_KIND, type: 'فعل' });
       return { ok: true, path: r, note: 'لن يُذكر بعد الآن، ونيكست الكبير يغلقه في Open Loops خلال دقائق.' };
     }
     case 'add_to_inbox':
@@ -993,12 +1006,12 @@ async function confirmAction() {
       return { status: 'فشل التنفيذ', error: result.error, instruction: 'قل له بجملة إنه فشل والسبب باختصار.' };
     }
     note('tool', `✓ نُفّذ: ${summarize(pend.name, pend.args)}`);
-    return { status: 'نُفّذ', instruction: `قل جملة واحدة فقط: «${DONE_LINE[pend.name] || 'تم.'}» ولا تكرر ما سألته.` };
+    return { status: 'نُفّذ', instruction: `قل جملة واحدة فقط: «${DONE_LINE[pend.name] || 'تم.'}» ولا تكرر ما سألته. وإن كان الوليد قد طلب أفعالاً أخرى لم تُرسل بعد، فاستدعِ أداة التالي منها الآن.` };
   }
   if (no) {
     call.pending = null;
     note('tool', '✗ أُلغي بطلبك');
-    return { status: 'رفض الوليد — أُلغي ولم يُنفَّذ', instruction: 'قل «تمام، مش هعملها» بجملة قصيرة، وإن بدا أنه يريد شيئاً معدّلاً فاسأله عنه.' };
+    return { status: 'رفض الوليد — أُلغي ولم يُنفَّذ', instruction: 'قل «تمام، مش هعملها» بجملة قصيرة، وإن بدا أنه يريد شيئاً معدّلاً فاسأله عنه. وإن كان قد طلب أفعالاً أخرى لم تُرسل بعد، فاستدعِ أداة التالي منها.' };
   }
   pend.heard = '';
   pend.at = Date.now();
