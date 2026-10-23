@@ -102,10 +102,12 @@
   .msg.sys { align-self: center; font-size: 13px; color: var(--warn); background: none; text-align: center; }
 
   .tasks { margin-top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 0 12px; }
-  .tasks summary { cursor: pointer; list-style: none; padding: 10px 0; font-size: 14px; font-weight: 500; display: flex; justify-content: space-between; align-items: center; }
-  .tasks summary::-webkit-details-marker { display: none; }
-  .tasks summary .hint-sm { font-size: 12px; color: var(--muted); font-weight: 400; }
-  .tasks[open] summary { border-bottom: 1px solid var(--line); }
+  .tasks .head { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; padding: 10px 0; font-size: 14px; font-weight: 500; display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--fg); }
+  .tasks .head .hint-sm { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .tasks .head .chev { transition: transform .2s; color: var(--muted); }
+  .tasks.open .head { border-bottom: 1px solid var(--line); }
+  .tasks.open .head .chev { transform: rotate(180deg); }
+  .tasks:not(.open) #tasksBody { display: none; }
   .tasks .grp { font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   #tasksBody { max-height: 42vh; overflow-y: auto; }
   .tasks ul { list-style: none; margin: 0; padding: 0; }
@@ -184,10 +186,10 @@
     </div>
   </div>
 
-  <details class="tasks" id="tasksPanel" hidden>
-    <summary><span id="tasksTitle">مهام اليوم</span><span class="hint-sm">اليوم · الأسبوع · المقترحات</span></summary>
+  <section class="tasks" id="tasksPanel" hidden>
+    <button class="head" type="button" id="tasksHead" aria-expanded="false" aria-controls="tasksBody"><span id="tasksTitle">مهام اليوم</span><span class="hint-sm"><span id="tasksHint">اضغط للفتح</span> <span class="chev">▾</span></span></button>
     <div id="tasksBody"></div>
-  </details>
+  </section>
 
   <div class="log" id="log" aria-live="polite"></div>
 
@@ -253,6 +255,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261024e"></script>
+<script type="module" src="app.js?v=20261024f"></script>
 </body>
 </html>

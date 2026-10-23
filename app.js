@@ -1815,9 +1815,15 @@ function showTasksPanel() {
 }
 $('tasksToggle').addEventListener('click', () => { store.set('tasksPanel', settings().tasksPanel === 'off' ? 'on' : 'off'); showTasksPanel(); renderTasks(); });
 // فتح القائمة وطيّها يُحفظ (في السيارة تبقى مطوية)
-$('tasksPanel').open = store.get('tasksOpen', 'off') === 'on';
-panel.tab = store.get('tasksTab', 'today');
-$('tasksPanel').addEventListener('toggle', () => store.set('tasksOpen', $('tasksPanel').open ? 'on' : 'off'));
+// طيّ القائمة وفتحها بزر صريح (details/summary لا يُطوى بثبات في Safari على iPhone)، والحالة تُحفظ
+function setTasksOpen(open) {
+  $('tasksPanel').classList.toggle('open', open);
+  $('tasksHead').setAttribute('aria-expanded', String(open));
+  $('tasksHint').textContent = open ? 'اضغط للطي' : 'اضغط للفتح';
+  store.set('tasksOpen', open ? 'on' : 'off');
+}
+setTasksOpen(store.get('tasksOpen', 'off') === 'on');
+$('tasksHead').addEventListener('click', () => setTasksOpen(!$('tasksPanel').classList.contains('open')));
 $('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); showTasksPanel(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
