@@ -217,7 +217,30 @@ const settings = () => ({
   barge: store.get('barge', 'on'),
   taskCheck: store.get('taskCheck', 'on'),
   boardFix: store.get('boardFix', 'on'),
+  opener: store.get('opener', 'on'),
 });
+
+// ---------- ذاكرة مكالمات اليوم ----------
+// ما حدث فعلاً في كل مكالمة (أفعال نُفّذت، أسئلة أُرسلت، مراجعة المهام) يُحفظ على الجهاز لليوم نفسه،
+// فتبدأ المكالمة التالية وهي تعرف ما قيل، ويُعرض ملخص المكالمة عند إنهائها. من الكود لا من النموذج، فلا يُختلق.
+function callMemory() {
+  try {
+    const d = JSON.parse(store.get('calls.today') || '{}');
+    return d.date === riyadhNow().date ? d.calls : [];
+  } catch { return []; }
+}
+function callEvent(text) {
+  if (call.events && !call.events.includes(text)) call.events.push(text);
+}
+function saveCallMemory() {
+  const ev = call.events || [];
+  if (!ev.length) return;
+  const { time } = riyadhNow();
+  const [hh, mm] = time.split(':').map(Number);
+  const at = `${hh % 12 || 12}:${String(mm).padStart(2, '0')} ${hh < 12 ? 'ص' : 'م'}`;
+  const calls = [...callMemory(), { at, events: ev.slice(0, 12) }].slice(-6);
+  store.set('calls.today', JSON.stringify({ date: riyadhNow().date, calls }));
+}
 
 // ---------- واجهة ----------
 const $ = (id) => document.getElementById(id);
@@ -507,9 +530,11 @@ function myTasks() {
     for (const seg of splitTop(m[2], ['؛'])) {
       const late = /^و?المتأخر\s*:/.test(seg);
       const body = seg.replace(/^و?المتأخر\s*:\s*/, '');
-      for (const sub of splitTop(body, ['، و', '، '])) {
-        if (/^لا شيء/.test(sub)) continue;
-        items.push(`متابعة ${m[1]}: ${sub.replace(/^و/, '')}${late ? ' — متأخر' : ''}`);
+      // اللوحة قد تفصل أيام الخطة بـ« · » وتسبق كل يوم بـ«من الأحد 18:» — كلاهما ليس من المهمة
+      for (const sub of splitTop(body, [' · ', '، و', '، '])) {
+        const task = sub.replace(/^و/, '').replace(/^من\s+\S+\s+\d{1,2}\s*:\s*/, '').trim();
+        if (!task || /^لا شيء/.test(task)) continue;
+        items.push(`متابعة ${m[1]}: ${task}${late ? ' — متأخر' : ''}`);
       }
     }
   }
@@ -790,6 +815,7 @@ async function runTool(name, args = {}, confirmed = false) {
     }
     case 'my_tasks': {
       const items = myTasks();
+      callEvent('راجعتما مهام اليوم');
       call.check = settings().taskCheck !== 'off' && items.length
         ? { items, terms: checkTerms(items), buf: '', at: Date.now(), nudged: false }
         : null;
@@ -815,6 +841,7 @@ async function runTool(name, args = {}, confirmed = false) {
     case 'add_to_inbox':
       return { ok: true, path: await addToInbox(args) };
     case 'ask_big_next':
+      if (args.type === 'سؤال') callEvent(`سأل نيكست الكبير: ${clip(args.title || args.request, 70)}`);
       return {
         ok: true,
         path: await addToInbox({ title: args.title, content: args.request, kind: BIG_KIND, type: args.type === 'سؤال' ? 'سؤال' : 'فعل' }), // غير «سؤال» لا يصل هنا إلا بعد التأكيد (GATED)
@@ -825,6 +852,7 @@ async function runTool(name, args = {}, confirmed = false) {
     case 'answers_heard': {
       const list = call.offered.splice(0);
       markAllHeard(list);
+      if (list.length) callEvent(`سمع ردود نيكست الكبير على: ${list.map((x) => clip(x.title, 40)).join('، ')}`);
       return { ok: true, count: list.length };
     }
     case 'big_next_status': {
@@ -902,8 +930,13 @@ function systemInstruction() {
       return u.length ? [`===== ردود جديدة من نيكست الكبير لم يسمعها الوليد =====\n${u.map((x, i) => `${i + 1}) ${x.title}:\n${x.answer}`).join('\n\n')}`] : [];
     })(),
     call.firstToday
-      ? '===== أول مكالمة اليوم =====\nهذه أول مكالمة للوليد اليوم: بعد ما يطلبه، اذكر بجملة واحدة عدد البنود «بلا موعد (يحتاج قرارك)» وعدد «مقترحات للـ Open Loops» في اللوحة، واسأله إن كان يريد أن تمرّا عليها الآن.'
+      ? '===== أول مكالمة اليوم =====\nهذه أول مكالمة للوليد اليوم. بعد صورة اليوم (أو بعد ما يطلبه)، اسأله سؤالاً واحداً قصيراً إن كان يريد المرور على القرارات المعلّقة (البنود بلا موعد والمقترحات) — بلا سرد أرقام كثيرة.'
       : 'ليست أول مكالمة اليوم: لا تذكر البنود بلا موعد ولا المقترحات من نفسك؛ فقط إن سأل.',
+    ...(() => {
+      const mem = callMemory();
+      return mem.length ? [`===== مكالماتك السابقة اليوم مع الوليد (ما حدث فعلاً) =====\n${mem.map((c) => `- ${c.at}: ${c.events.join('؛ ')}`).join('\n')}\nاستعملها للاستمرارية كزميل يتذكر («زي ما قلنا الصبح…»): لا تعرض عليه ما قُفل أو انتهى، ولا تسرد هذا القسم عليه.`] : [];
+    })(),
+    '===== الختام =====\nإن ودّعك أو قال ما معناه «خلاص كده»: اختم بجملة واحدة بما تم فعلاً في هذه المكالمة إن نُفّذ شيء («تمام، قفلنا ريفي وبعتنا سؤال لنيكست الكبير»)، ثم ودّعه. لا تذكر شيئاً لم يُنفَّذ.',
     `آخر تحديث للفهرس: ${vault.built || 'غير معروف'}.`,
   ].join('\n\n');
 }
@@ -1089,7 +1122,7 @@ function u8ToB64(u8) {
 // ---------- المكالمة ----------
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
-  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null, check: null,
+  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null, check: null, events: [],
   lastUser: 0, lastModel: 0, modelText: '', firstToday: false, news: [], offered: [], pollTimer: 0, idleTimer: 0,
 };
 
@@ -1142,6 +1175,7 @@ async function confirmAction() {
       return { status: 'فشل التنفيذ', error: result.error, instruction: 'قل له بجملة إنه فشل والسبب باختصار.' };
     }
     note('tool', `✓ نُفّذ: ${summarize(pend.name, pend.args)}`);
+    callEvent(summarize(pend.name, pend.args).replace(/^هقفل:/, 'قُفل:').replace(/^هسجّل/, 'سُجّل').replace(/^هبعت/, 'أُرسل').replace(/\s*\((واتساب|مش ظاهر)[^)]*\)\s*$/, ''));
     return { status: 'نُفّذ', instruction: `قل جملة واحدة فقط: «${DONE_LINE[pend.name] || 'تم.'}» ولا تكرر ما سألته. وإن كان الوليد قد طلب أفعالاً أخرى لم تُرسل بعد، فاستدعِ أداة التالي منها الآن.` };
   }
   if (no) {
@@ -1198,6 +1232,7 @@ async function startCall() {
   call.retries = 0;
   call.modelText = '';
   call.check = null;
+  call.events = [];
   diagStart();
   ui.meter.hidden = false;
   ui.orb.disabled = true;
@@ -1218,8 +1253,15 @@ async function startCall() {
     call.started = Date.now();
     store.set('call.day', riyadhNow().date);
     const unheard = unheardAnswers();
-    if (unheard.length) {
-      call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) ابدأ بإخبار الوليد باختصار أن عنده ${unheard.length === 1 ? 'رداً جديداً' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')}، واسأله إن كان يريد سماعها. بعد أن تقرأها عليه، أو إن رفض سماعها أصلاً، استدعِ answers_heard.` });
+    const unheardLine = unheard.length
+      ? `عنده ${unheard.length === 1 ? 'رد جديد' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')} — اذكرها بجملة واسأله إن كان يريد سماعها؛ بعد أن تقرأها عليه، أو إن رفض سماعها أصلاً، استدعِ answers_heard.`
+      : '';
+    if (call.firstToday && settings().opener !== 'off') {
+      // أول مكالمة اليوم: نيكست يبادر كمساعد بشري بدل أن ينتظر «إيه مهامي؟» — رسالة واحدة فلا يتكرر الرد
+      call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) أول مكالمة للوليد اليوم: ابدأ أنت الكلام. استدعِ my_tasks، ثم حيّه تحية قصيرة تناسب الوقت وأعطه صورة اليوم بجملتين كزميل (المتأخر عليه هو بالاسم، والباقي مجموعاً بصاحبه، وجملة بما ينتظر اعتماده إن وُجد)، ثم اسأله من أين يبدأ. ${unheardLine} إن بدأ هو بالكلام قبلك فأجبه أولاً.` });
+      if (unheard.length) offer(unheard);
+    } else if (unheard.length) {
+      call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) ابدأ بإخبار الوليد باختصار أن ${unheardLine}` });
       offer(unheard);
     }
     startNewsWatch();
@@ -1394,6 +1436,9 @@ function onClose(e, ref) {
 async function endCall(silent = false) {
   call.ending = true;
   diagEnd();
+  if (call.events?.length) note('sys', `🧾 في هذه المكالمة: ${call.events.join('؛ ')}`);
+  saveCallMemory();
+  call.events = [];
   ui.meter.hidden = true;
   call.check = null;
   stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
@@ -1594,7 +1639,13 @@ $('diagExport').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(data); $('diagInfo').textContent = `✓ نُسخ (${JSON.parse(store.get('diag.calls') || '[]').length} مكالمة) — ألصقه لنيكست في محادثة Claude.`; }
   catch { $('diagInfo').textContent = 'تعذّر النسخ: ' + data.slice(0, 160); }
 });
-$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); dlg.showModal(); });
+function showOpener() {
+  const on = settings().opener !== 'off';
+  $('openerToggle').textContent = on ? 'مفعّل — يحيّيك بصورة اليوم' : 'مُطفأ — ينتظرك تبدأ';
+  $('openerToggle').classList.toggle('on', !on);
+}
+$('openerToggle').addEventListener('click', () => { store.set('opener', settings().opener === 'off' ? 'on' : 'off'); showOpener(); });
+$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
 for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
