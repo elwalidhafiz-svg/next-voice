@@ -406,8 +406,8 @@ function simTerms(s) {
 }
 function coreOf(line) { // وصف البند وحده: بلا التاريخ وسياق البند («المشروع · الشخص · القناة») وصاحب الفعل والموعد وملاحظة واتساب والأقواس
   let s = line.replace(/^- /, '').replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').split(' · واتساب:')[0].split(' ← ')[0];
-  const parts = s.split(' · ');
-  s = parts[parts.length - 1];
+  const parts = s.split(' · ').filter((p) => !/^متابعة\s*:/.test(p.trim())); // وسم «متابعة: يومية» ليس وصفاً
+  s = parts[parts.length - 1] || '';
   return s.split(' — ')[0].replace(/\d{4}-\d{2}-\d{2}/g, ' ').replace(/\([^)]*\)/g, ' ');
 }
 function taskOf(line) { // كذلك بلا «صاحب الفعل:» في أوله — للمقارنة مع أسطر الإغلاق فقط
@@ -560,6 +560,13 @@ function rankLines(lines, query, all) {
   return lines.map((l) => { const nl = norm(l); return { l, s: ts.reduce((k, t) => k + (nl.includes(t) ? idf[t] : 0), 0) }; })
     .filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
 }
+// سطر الخطة يضم عدة مقاطع مفصولة بـ«؛» — هذا يعيد المقطع الذي قصده الوليد، لا أول السطر
+function bestSegment(line, query) {
+  const segs = taskOf('- ' + line.replace(/^- /, '')).split('؛').map((s) => s.trim()).filter((s) => s.length > 3);
+  if (segs.length < 2) return segs[0] || taskOf(line).trim();
+  const r = rankLines(segs, query, segs);
+  return (r[0]?.l || segs[0]).trim();
+}
 function verifyItem(item) {
   const { open, closed } = openLoopsLines();
   const all = [...open, ...closed];
@@ -567,12 +574,13 @@ function verifyItem(item) {
   const bo = o[0]?.s || 0, bc = c[0]?.s || 0;
   if (bc > 0 && bc > bo * 1.2) return { state: 'closed', line: c[0].l };
   if (bo < 1.5) return { state: 'missing' }; // لا كلمة مميزة واحدة تطابق
-  if (o.length > 1 && o[1].s >= bo * 0.85) return { state: 'ambiguous', candidates: o.slice(0, 3).map((x) => spoken(x.l.slice(2))) }; // بلا السياق المشترك (مثل «خطة الأسبوع (…)») حتى يفرّق بينها
+  if (o.length > 1 && o[1].s >= bo * 0.85) return { state: 'ambiguous', candidates: o.slice(0, 3).map((x) => clip(bestSegment(x.l, item), 90)) }; // بلا السياق المشترك حتى يفرّق بينها
   const line = o[0].l.slice(2);
+  const part = bestSegment(line, item);
   // الدليل فقط مما قررت لوحة اليوم أنه «يبدو أنه أُنجز» (نيكست الكبير طابقه بالبند)، لا مطابقة كلمات عابرة
   const waLines = whatsappDone().split('\n').filter((l) => l.startsWith('- '));
-  const wa = rankLines(waLines, line.split('—')[0], all);
-  return { state: 'open', line, evidence: wa.length && wa[0].s >= 3 ? wa[0].l.replace(/^- /, '') : '' };
+  const wa = rankLines(waLines, part, all);
+  return { state: 'open', line, part, evidence: wa.length && wa[0].s >= 3 ? wa[0].l.replace(/^- /, '') : '' };
 }
 
 function openLoopsForVoice() {
@@ -725,7 +733,7 @@ function spoken(line) {
 }
 function clip(s, n) { return (s || '').length > n ? s.slice(0, n).replace(/\s+\S*$/, '') + '…' : (s || ''); }
 function summarize(name, args) {
-  if (name === 'mark_done') return `هقفل: ${spoken(args.item)}${args._wa ? ' (واتساب: ' + clip(args._wa, 90) + ')' : ' (مش ظاهر في واتساب إنه خلص، بس كلامك هو المرجع)'}`;
+  if (name === 'mark_done') return `هقفل: ${clip(args.part, 90) || spoken(args.item)}${args._wa ? ' (واتساب: ' + clip(args._wa, 90) + ')' : ' (مش ظاهر في واتساب إنه خلص، بس كلامك هو المرجع)'}`;
   if (name === 'add_to_inbox') return `هسجّل في الـ Inbox: ${args.title}`;
   return `هبعت لنيكست الكبير: ${args.request || args.title}`;
 }
@@ -735,7 +743,7 @@ async function runTool(name, args = {}, confirmed = false) {
     if (v.state === 'closed') return { status: 'مقفول بالفعل — لم يُرسل شيء', closed_line: v.line, instruction: 'قل له إنه مقفول بالفعل، ومتى (من السطر).' };
     if (v.state === 'missing') return { status: 'لا يوجد بند مفتوح بهذا الوصف — لم يُرسل شيء', instruction: 'اسأله أي بند يقصد، أو اقرأ open_loops لتجده.' };
     if (v.state === 'ambiguous') return { status: 'أكثر من بند مفتوح يطابق — لم يُرسل شيء', candidates: v.candidates, instruction: 'اسأله أيها يقصد، ثم استدعِ الأداة بوصفه الدقيق.' };
-    args = { ...args, item: v.line.slice(0, 160), evidence: args.evidence || (v.evidence ? 'حسب واتساب: ' + v.evidence : ''), _wa: v.evidence };
+    args = { ...args, asked: args.item, item: v.line.slice(0, 160), part: v.part, evidence: args.evidence || (v.evidence ? 'حسب واتساب: ' + v.evidence : ''), _wa: v.evidence };
   }
   if (!confirmed && GATED(name, args)) {
     if (call.pending) {
@@ -785,7 +793,7 @@ async function runTool(name, args = {}, confirmed = false) {
     }
     case 'mark_done': {
       addDoneToday(args.item);
-      const r = await addToInbox({ title: `إغلاق: ${args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)\nوإن كان البند سطر خطة أو متابعة يضم عدة أجزاء وما طُلب إغلاقه جزء منه فقط: أغلق الجزء المقصود وحده (احذفه من السطر واذكره في «مُغلق»)، وأبقِ باقي السطر مفتوحاً كما هو.`, kind: BIG_KIND, type: 'فعل' });
+      const r = await addToInbox({ title: `إغلاق: ${args.part || args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n${args.part ? `الجزء المقصود تحديداً: «${args.part}»${args.asked ? ` (قال الوليد: «${args.asked}»)` : ''}\n` : ''}(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)\nوإن كان البند سطر خطة أو متابعة يضم عدة أجزاء: أغلق الجزء المقصود وحده (احذفه من السطر واذكره في «مُغلق»)، وأبقِ باقي السطر مفتوحاً كما هو.`, kind: BIG_KIND, type: 'فعل' });
       return { ok: true, path: r, note: 'لن يُذكر بعد الآن، ونيكست الكبير يغلقه في Open Loops خلال دقائق.' };
     }
     case 'add_to_inbox':
