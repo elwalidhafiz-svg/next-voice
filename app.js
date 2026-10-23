@@ -193,6 +193,7 @@ async function unlock() {
   }
   lock.locked = false;
   document.getElementById('lockScreen').hidden = true;
+  setTimeout(() => refreshIdle(true), 0);
 }
 
 function lockNow() {
@@ -641,7 +642,7 @@ function panelList(items, opts = {}) {
 function renderTasks() {
   const box = document.getElementById('tasksPanel');
   if (!box) return;
-  if (settings().tasksPanel === 'off' || !call.active || !vault.byPath.size) { box.hidden = true; return; }
+  if (settings().tasksPanel === 'off' || lock.locked || !vault.byPath.size) { box.hidden = true; return; }
   const items = myTasks();
   const week = boardItems('مفتوح الآن — قادم').filter(withinWeek);
   const props = boardItems('مقترحات للـ Open Loops (تنتظر قرارك)');
@@ -682,10 +683,17 @@ function renderTasks() {
     if (props.length) body.append(panelList(props, { kind: 'proposal' })); else empty('لا مقترحات تنتظر قرارك.');
   }
   document.getElementById('tasksTitle').textContent = items.length ? `مهام اليوم (${items.length})` : 'لا مهام موعدها اليوم';
+  const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
+  if (body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
   box.hidden = false;
 }
 function askAbout(item, kind) {
-  if (!call.session) return;
+  if (!call.session) { // خارج المكالمة: الضغط يبدأ المكالمة، ونيكست يفتتح بهذا البند
+    if (call.active) return; // المكالمة تتصل الآن
+    call.askOnStart = { item, kind };
+    startCall();
+    return;
+  }
   const what = kind === 'proposal'
     ? `هذا مقترح ينتظر قراره: «${item}». قل له بجملة ما هو ومن أين ظهر، واسأله: يضيفه بموعد، أو متابعة يومية، أو يتجاهله — ونفّذ حسب رده بقاعدة «المرور على مقترحات».`
     : `«${item}». قل له ما تعرفه عنه بجملتين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.`;
@@ -1294,7 +1302,7 @@ function u8ToB64(u8) {
 // ---------- المكالمة ----------
 const call = {
   active: false, session: null, handle: null, muted: false, ending: false,
-  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null, check: null, events: [],
+  started: 0, retries: 0, wakeLock: null, raf: 0, tick: 0, pending: null, check: null, events: [], askOnStart: null,
   lastUser: 0, lastModel: 0, modelText: '', firstToday: false, news: [], offered: [], pollTimer: 0, idleTimer: 0,
 };
 
@@ -1398,8 +1406,9 @@ function stopNewsWatch() {
 
 async function startCall() {
   const s = settings();
-  if (lock.locked) return;
+  if (lock.locked) { call.askOnStart = null; return; }
   if (!s.key || !s.repo || (s.repo !== 'local' && !s.token)) {
+    call.askOnStart = null;
     $('settings').showModal();
     setStatus('أكمل الإعدادات أولاً', 'err');
     return;
@@ -1435,7 +1444,12 @@ async function startCall() {
     const unheardLine = unheard.length
       ? `عنده ${unheard.length === 1 ? 'رد جديد' : unheard.length + ' ردود جديدة'} من نيكست الكبير على: ${unheard.map((x) => x.title).join('، ')} — اذكرها بجملة واسأله إن كان يريد سماعها؛ بعد أن تقرأها عليه، أو إن رفض سماعها أصلاً، استدعِ answers_heard.`
       : '';
-    if (call.firstToday && settings().opener !== 'off') {
+    if (call.askOnStart) {
+      const { item, kind } = call.askOnStart;
+      call.askOnStart = null;
+      askAbout(item, kind);
+      if (unheard.length) offer(unheard); // الردود الجديدة في تعليماته، يذكرها بعد البند
+    } else if (call.firstToday && settings().opener !== 'off') {
       // أول مكالمة اليوم: نيكست يبادر كمساعد بشري بدل أن ينتظر «إيه مهامي؟» — رسالة واحدة فلا يتكرر الرد
       call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) أول مكالمة للوليد اليوم: ابدأ أنت الكلام. استدعِ my_tasks، ثم حيّه تحية قصيرة تناسب الوقت وأعطه صورة اليوم بجملتين كزميل (المتأخر عليه هو بالاسم، والباقي مجموعاً بصاحبه، وجملة بما ينتظر اعتماده إن وُجد)، ثم اسأله من أين يبدأ. ${unheardLine} إن بدأ هو بالكلام قبلك فأجبه أولاً.` });
       if (unheard.length) offer(unheard);
@@ -1453,6 +1467,7 @@ async function startCall() {
     animate();
   } catch (e) {
     console.error(e);
+    call.askOnStart = null;
     note('sys', 'تعذّر البدء: ' + (e.message || e));
     await endCall(true);
   } finally {
@@ -1622,7 +1637,7 @@ async function endCall(silent = false) {
   call.events = [];
   ui.meter.hidden = true;
   clearTimeout(panelTimer);
-  document.getElementById('tasksPanel').hidden = true;
+  panel.said = '';
   call.check = null;
   stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
   call.pending = null; // فعل لم يُؤكَّد لا يُنفَّذ
@@ -1646,6 +1661,7 @@ async function endCall(silent = false) {
   ui.mute.classList.remove('on');
   ui.mute.textContent = 'كتم المايك';
   call.muted = false;
+  setTimeout(() => { renderTasks(); refreshIdle(true); }, 0);
   if (!silent) setStatus('انتهت المكالمة');
   else if (!ui.status.textContent.startsWith('أكمل')) setStatus('متوقف', 'err');
   renderUsage();
@@ -1833,7 +1849,7 @@ function showTasksPanel() {
   $('tasksToggle').textContent = on ? 'مفعّل — تظهر أثناء المكالمة' : 'مُطفأ';
   $('tasksToggle').classList.toggle('on', !on);
 }
-$('tasksToggle').addEventListener('click', () => { store.set('tasksPanel', settings().tasksPanel === 'off' ? 'on' : 'off'); showTasksPanel(); renderTasks(); });
+$('tasksToggle').addEventListener('click', () => { store.set('tasksPanel', settings().tasksPanel === 'off' ? 'on' : 'off'); showTasksPanel(); renderTasks(); refreshIdle(true); });
 // فتح القائمة وطيّها يُحفظ (في السيارة تبقى مطوية)
 // طيّ القائمة وفتحها بزر صريح (details/summary لا يُطوى بثبات في Safari على iPhone)، والحالة تُحفظ
 function setTasksOpen(open) {
@@ -1884,6 +1900,19 @@ if (lockEnabled()) lockNow();
 
 renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
+
+// ---------- المهام خارج المكالمة ----------
+// تُجلب نسخة الـ Vault حين يكون التطبيق مفتوحاً وغير مقفل، فتظهر البطاقات دون اتصال.
+let idleLoadAt = 0;
+async function refreshIdle(force = false) {
+  const s = settings();
+  if (call.active || lock.locked || s.tasksPanel === 'off' || !s.repo || (s.repo !== 'local' && !s.token)) return;
+  if (!force && Date.now() - idleLoadAt < 60000) return;
+  idleLoadAt = Date.now();
+  try { await loadVault(); boardCache = { key: '', text: '' }; renderTasks(); } catch (e) { console.warn('idle load', e); }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIdle(); });
+refreshIdle(true);
 
 // للتجربة من الـ console فقط
 window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag, renderTasks, panel, indexNotes, vault };
