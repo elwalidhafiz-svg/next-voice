@@ -742,11 +742,18 @@ function rankLines(lines, query, all) {
     .filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
 }
 // سطر الخطة يضم عدة مقاطع مفصولة بـ«؛» — هذا يعيد المقطع الذي قصده الوليد، لا أول السطر
+function lineSegments(line) {
+  return taskOf('- ' + line.replace(/^- /, '')).split('؛').map((s) => s.trim()).filter((s) => s.length > 3);
+}
+// المقطع المقصود داخل سطر الخطة: بعدد الجذور المشتركة مع كلام الوليد (لا IDF — مع مقطعين فقط كان يصفّر كل الكلمات
+// فيعود لأول مقطع خطأً). لا تخمين: إن لم يطابق مقطع، أو تعادل الأول والثاني، يعيد null فيُسأل الوليد أيها يقصد.
 function bestSegment(line, query) {
-  const segs = taskOf('- ' + line.replace(/^- /, '')).split('؛').map((s) => s.trim()).filter((s) => s.length > 3);
+  const segs = lineSegments(line);
   if (segs.length < 2) return segs[0] || taskOf(line).trim();
-  const r = rankLines(segs, query, segs);
-  return (r[0]?.l || segs[0]).trim();
+  const q = stems(query);
+  const scored = segs.map((s) => ({ s, n: [...stems(s)].filter((t) => q.has(t)).length })).sort((a, b) => b.n - a.n);
+  if (!scored[0].n || scored[0].n === scored[1].n) return null;
+  return scored[0].s;
 }
 function verifyItem(item) {
   const { open, closed } = openLoopsLines();
@@ -755,9 +762,10 @@ function verifyItem(item) {
   const bo = o[0]?.s || 0, bc = c[0]?.s || 0;
   if (bc > 0 && bc > bo * 1.2) return { state: 'closed', line: c[0].l };
   if (bo < 1.5) return { state: 'missing' }; // لا كلمة مميزة واحدة تطابق
-  if (o.length > 1 && o[1].s >= bo * 0.85) return { state: 'ambiguous', candidates: o.slice(0, 3).map((x) => clip(bestSegment(x.l, item), 90)) }; // بلا السياق المشترك حتى يفرّق بينها
+  if (o.length > 1 && o[1].s >= bo * 0.85) return { state: 'ambiguous', candidates: o.slice(0, 3).map((x) => clip(bestSegment(x.l, item) || lineSegments(x.l).join('؛ '), 90)) }; // بلا السياق المشترك حتى يفرّق بينها
   const line = o[0].l.slice(2);
   const part = bestSegment(line, item);
+  if (part === null) return { state: 'ambiguous', candidates: lineSegments(line).map((s) => clip(s, 90)) }; // سطر خطة ولم يتضح أي جزء
   // الدليل فقط مما قررت لوحة اليوم أنه «يبدو أنه أُنجز» (نيكست الكبير طابقه بالبند)، لا مطابقة كلمات عابرة
   const waLines = whatsappDone().split('\n').filter((l) => l.startsWith('- '));
   const wa = rankLines(waLines, part, all);
