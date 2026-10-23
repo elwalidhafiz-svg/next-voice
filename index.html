@@ -101,6 +101,20 @@
   .msg.tool { align-self: center; font-size: 12px; color: var(--muted); background: none; padding: 2px 8px; }
   .msg.sys { align-self: center; font-size: 13px; color: var(--warn); background: none; text-align: center; }
 
+  .tasks { margin-top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 0 12px; }
+  .tasks summary { cursor: pointer; list-style: none; padding: 10px 0; font-size: 14px; font-weight: 500; display: flex; justify-content: space-between; align-items: center; }
+  .tasks summary::-webkit-details-marker { display: none; }
+  .tasks summary .hint-sm { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .tasks[open] summary { border-bottom: 1px solid var(--line); }
+  .tasks .grp { font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  #tasksBody { max-height: 42vh; overflow-y: auto; }
+  .tasks ul { list-style: none; margin: 0; padding: 0; }
+  .tasks li { padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.5; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+  .tasks li:last-child { border-bottom: 0; }
+  .tasks li .late { color: var(--warn); font-size: 12px; flex: none; }
+  .tasks li.said { color: var(--muted); }
+  .tasks li.said::before { content: '✓'; color: var(--ok); flex: none; }
+  .tasks .appr { font-size: 12px; color: var(--muted); padding: 8px 0 10px; }
   .composer { display: flex; gap: 8px; margin-top: 8px; }
   .composer input {
     flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); color: var(--fg);
@@ -167,6 +181,11 @@
     </div>
   </div>
 
+  <details class="tasks" id="tasksPanel" hidden>
+    <summary><span id="tasksTitle">مهام اليوم</span><span class="hint-sm">اضغط بنداً ليحدّثك عنه</span></summary>
+    <div id="tasksBody"></div>
+  </details>
+
   <div class="log" id="log" aria-live="polite"></div>
 
   <form class="composer" id="composer" hidden>
@@ -207,6 +226,9 @@
     <label>فحص اكتمال المهام</label>
     <div class="lock-row"><button class="pill" type="button" id="taskCheckToggle">مفعّل</button></div>
     <div class="check">عند سرد مهام اليوم، يتحقق التطبيق أن نيكست ذكرها كلها ويذكّره بما أسقطه.</div>
+    <label>المهام على الشاشة</label>
+    <div class="lock-row"><button class="pill" type="button" id="tasksToggle">مفعّل</button></div>
+    <div class="check">قائمة مهام اليوم أثناء المكالمة، تُطوى وتُفتح، وتتعلّم بـ✓ ما ذكره نيكست.</div>
     <label>يبدأ هو أول مكالمة اليوم</label>
     <div class="lock-row"><button class="pill" type="button" id="openerToggle">مفعّل</button></div>
     <div class="check">في أول مكالمة كل يوم يحيّيك ويعطيك صورة اليوم دون أن تسأل.</div>
@@ -228,6 +250,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261024b"></script>
+<script type="module" src="app.js?v=20261024d"></script>
 </body>
 </html>

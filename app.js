@@ -218,6 +218,7 @@ const settings = () => ({
   taskCheck: store.get('taskCheck', 'on'),
   boardFix: store.get('boardFix', 'on'),
   opener: store.get('opener', 'on'),
+  tasksPanel: store.get('tasksPanel', 'on'),
 });
 
 // ---------- ذاكرة مكالمات اليوم ----------
@@ -548,6 +549,62 @@ function checkTerms(items) {
   for (const ws of words) for (const w of ws) df.set(w, (df.get(w) || 0) + 1);
   return words.map((ws) => ws.sort((a, b) => (df.get(a) - df.get(b)) || (b.length - a.length)).slice(0, 4));
 }
+// ---------- المهام على الشاشة (مفتاح «المهام على الشاشة») ----------
+// عرض فقط: نفس قائمة my_tasks مجمّعة، ✓ على ما ذكره نيكست في المكالمة، والضغط على بند يطلب من نيكست الحديث عنه
+// (قراءة لا فعل — أي إغلاق يمر بالتأكيد الصوتي كالعادة).
+const panel = { said: '', terms: [], items: [] };
+function renderTasks() {
+  const box = document.getElementById('tasksPanel');
+  if (!box) return;
+  if (settings().tasksPanel === 'off' || !call.active || !vault.byPath.size) { box.hidden = true; return; }
+  const items = myTasks();
+  panel.items = items;
+  panel.terms = checkTerms(items);
+  const said = norm(panel.said);
+  const groups = [['عليك', (x) => x.startsWith('عليك')], ['متابعة', (x) => x.startsWith('متابعة ')], ['عند غيرك', () => true]];
+  const used = new Set();
+  const body = document.getElementById('tasksBody');
+  body.replaceChildren();
+  for (const [name, test] of groups) {
+    const list = items.map((x, i) => ({ x, i })).filter(({ x, i }) => !used.has(i) && test(x));
+    if (!list.length) continue;
+    list.forEach(({ i }) => used.add(i));
+    const h = document.createElement('div');
+    h.className = 'grp';
+    h.textContent = name === 'متابعة' ? (list[0].x.match(/^متابعة ([^:]+):/)?.[0].replace(':', '') || 'متابعة') : name;
+    const ul = document.createElement('ul');
+    for (const { x, i } of list) {
+      const li = document.createElement('li');
+      const late = / — متأخر/.test(x);
+      const text = x.replace(/^عليك:\s*/, '').replace(/^متابعة [^:]+:\s*/, '').replace(/ — (متأخر.*|اليوم)$/, '');
+      li.append(document.createTextNode(text));
+      if (late) { const s = document.createElement('span'); s.className = 'late'; s.textContent = 'متأخر'; li.append(s); }
+      // ✓ عرضيّ متشدد: أندر كلمة في البند + كلمتان على الأقل (كلمات مثل «صرة» و«خطة» تتكرر في بنود كثيرة)
+      const ts = panel.terms[i] || [];
+      const hit = ts.filter((t) => said.includes(t)).length;
+      if (ts.length && said.includes(ts[0]) && hit >= Math.min(2, ts.length)) li.classList.add('said');
+      li.addEventListener('click', () => askAbout(x));
+      ul.append(li);
+    }
+    body.append(h, ul);
+  }
+  const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim());
+  if (appr.length) { const a = document.createElement('div'); a.className = 'appr'; a.textContent = 'ينتظر اعتمادك: ' + appr.join(' · '); body.append(a); }
+  document.getElementById('tasksTitle').textContent = items.length ? `مهام اليوم (${items.length})` : 'لا مهام موعدها اليوم';
+  box.hidden = false;
+}
+function askAbout(item) {
+  if (!call.session) return;
+  call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) الوليد ضغط على هذا البند في الشاشة: «${item}». قل له ما تعرفه عنه بجملتين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.` });
+  note('tool', `👆 سأل عن: ${clip(item, 60)}`);
+}
+let panelTimer = 0;
+function markSaid(text) { // ✓ يتحدّث بعد كل جملة لنيكست، بتأخير بسيط حتى لا يعيد الرسم مع كل كلمة
+  panel.said = (panel.said + ' ' + text).slice(-20000);
+  clearTimeout(panelTimer);
+  panelTimer = setTimeout(renderTasks, 800);
+}
+
 // فحص بعد السرد: بند لم تظهر أي كلمة من كلماته المميزة فيما قاله نيكست ← تذكير واحد (مفتاح «فحص اكتمال المهام»)
 function checkTasksSaid(now, idle) {
   const c = call.check;
@@ -1144,6 +1201,7 @@ async function pollNews() {
   try { await loadVault(); } catch { return; }
   const known = new Set(call.news.map((x) => x.path));
   call.news.push(...unheardAnswers().filter((x) => !known.has(x.path)));
+  renderTasks(); // ما أُغلق أو جدّ في Open Loops أثناء المكالمة
 }
 const YES = /(^|[\s،,.!؟?])(أيوه|ايوه|أيوا|ايوا|أيوة|ايوة|آه|اه|أه|نعم|تمام|صح|صحيح|أكيد|اكيد|ماشي|أوكي|اوكي|يلا|بالظبط|بالضبط|ok|okay|yes|yeah|yep|sure)($|[\s،,.!؟?])/i;
 const NO = /(^|[\s،,.!؟?])(لا|لأ|لاء|مش|غلط|استنى|استني|الغي|ألغي|بلاش|no|nope|cancel|wait)($|[\s،,.!؟?])/i;
@@ -1175,6 +1233,7 @@ async function confirmAction() {
       return { status: 'فشل التنفيذ', error: result.error, instruction: 'قل له بجملة إنه فشل والسبب باختصار.' };
     }
     note('tool', `✓ نُفّذ: ${summarize(pend.name, pend.args)}`);
+    if (pend.name === 'mark_done') setTimeout(renderTasks, 50); // يختفي من القائمة فوراً (doneToday)
     callEvent(summarize(pend.name, pend.args).replace(/^هقفل:/, 'قُفل:').replace(/^هسجّل/, 'سُجّل').replace(/^هبعت/, 'أُرسل').replace(/\s*\((واتساب|مش ظاهر)[^)]*\)\s*$/, ''));
     return { status: 'نُفّذ', instruction: `قل جملة واحدة فقط: «${DONE_LINE[pend.name] || 'تم.'}» ولا تكرر ما سألته. وإن كان الوليد قد طلب أفعالاً أخرى لم تُرسل بعد، فاستدعِ أداة التالي منها الآن.` };
   }
@@ -1233,6 +1292,7 @@ async function startCall() {
   call.modelText = '';
   call.check = null;
   call.events = [];
+  panel.said = '';
   diagStart();
   ui.meter.hidden = false;
   ui.orb.disabled = true;
@@ -1265,6 +1325,7 @@ async function startCall() {
       offer(unheard);
     }
     startNewsWatch();
+    renderTasks();
     acquireWakeLock();
     ui.mute.hidden = ui.end.hidden = ui.composer.hidden = false;
     ui.orb.classList.remove('idle');
@@ -1368,6 +1429,7 @@ async function onMessage(m, ref) {
   if (sc.outputTranscription?.text) {
     call.modelText = (call.modelText + ' ' + sc.outputTranscription.text).slice(-600);
     if (call.check) call.check.buf = (call.check.buf + ' ' + sc.outputTranscription.text).slice(-8000);
+    markSaid(sc.outputTranscription.text);
     say('next', sc.outputTranscription.text);
   }
   if (sc.turnComplete) bubble = { role: null, el: null };
@@ -1440,6 +1502,8 @@ async function endCall(silent = false) {
   saveCallMemory();
   call.events = [];
   ui.meter.hidden = true;
+  clearTimeout(panelTimer);
+  document.getElementById('tasksPanel').hidden = true;
   call.check = null;
   stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
   call.pending = null; // فعل لم يُؤكَّد لا يُنفَّذ
@@ -1645,7 +1709,16 @@ function showOpener() {
   $('openerToggle').classList.toggle('on', !on);
 }
 $('openerToggle').addEventListener('click', () => { store.set('opener', settings().opener === 'off' ? 'on' : 'off'); showOpener(); });
-$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); dlg.showModal(); });
+function showTasksPanel() {
+  const on = settings().tasksPanel !== 'off';
+  $('tasksToggle').textContent = on ? 'مفعّل — تظهر أثناء المكالمة' : 'مُطفأ';
+  $('tasksToggle').classList.toggle('on', !on);
+}
+$('tasksToggle').addEventListener('click', () => { store.set('tasksPanel', settings().tasksPanel === 'off' ? 'on' : 'off'); showTasksPanel(); renderTasks(); });
+// فتح القائمة وطيّها يُحفظ (في السيارة تبقى مطوية)
+$('tasksPanel').open = store.get('tasksOpen', 'off') === 'on';
+$('tasksPanel').addEventListener('toggle', () => store.set('tasksOpen', $('tasksPanel').open ? 'on' : 'off'));
+$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); showTasksPanel(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
 for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
@@ -1687,4 +1760,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag };
+window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag, renderTasks, panel, indexNotes, vault };
