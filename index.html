@@ -59,6 +59,11 @@
     width: 40px; height: 40px; border-radius: 12px; font-size: 18px; cursor: pointer;
   }
   .status { margin-top: 6px; font-size: 13px; color: var(--muted); min-height: 18px; display: flex; gap: 8px; align-items: center; }
+  #meter { position: relative; height: 6px; border-radius: 3px; background: #1d1d22; margin: 10px auto 0; width: min(280px, 70vw); overflow: hidden; }
+  #meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4ade80, #f59e0b); }
+  #meter b { position: absolute; top: 0; bottom: 0; width: 2px; background: #777; }
+  #meter b.b2 { background: #e0245e; }
+  #meter.playing i { opacity: 0.45; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
   .dot.live { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
   .dot.busy { background: var(--warn); }
@@ -155,6 +160,7 @@
       <span id="timer">00:00</span>
       <span id="cost">هذا الشهر: 0 د</span>
     </div>
+    <div id="meter" hidden title="مستوى المايك — الخط الأول عتبة السمع، والأحمر عتبة المقاطعة"><i id="meterFill"></i><b style="right:3.2%"></b><b class="b2" style="right:25.6%"></b></div>
     <div class="controls">
       <button class="pill" id="muteBtn" hidden>كتم المايك</button>
       <button class="pill" id="endBtn" hidden>إنهاء</button>
@@ -201,6 +207,12 @@
     <label>فحص اكتمال المهام</label>
     <div class="lock-row"><button class="pill" type="button" id="taskCheckToggle">مفعّل</button></div>
     <div class="check">عند سرد مهام اليوم، يتحقق التطبيق أن نيكست ذكرها كلها ويذكّره بما أسقطه.</div>
+    <label>تصحيح اللوحة</label>
+    <div class="lock-row"><button class="pill" type="button" id="boardFixToggle">مفعّل</button></div>
+    <div class="check">يحدّث عرض لوحة اليوم من Open Loops الحالي: يخفي ما أُغلق بعد آخر لوحة ويضيف الجديد.</div>
+    <label>تشخيص الصوت</label>
+    <div class="lock-row"><button class="pill" type="button" id="diagExport">نسخ تشخيص آخر المكالمات</button></div>
+    <div class="check" id="diagInfo">أرقام فقط (مستويات وعدادات، بلا نصوص)، تبقى على جهازك حتى تنسخها بنفسك.</div>
     <label>قفل Face ID</label>
     <div class="lock-row"><button class="pill" type="button" id="lockToggle">تفعيل قفل Face ID</button></div>
     <div class="check" id="lockStatus"></div>
@@ -213,6 +225,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261023c"></script>
+<script type="module" src="app.js?v=20261023d"></script>
 </body>
 </html>

@@ -216,6 +216,7 @@ const settings = () => ({
   langs: store.get('langs').trim() || DEFAULT_LANGS,
   barge: store.get('barge', 'on'),
   taskCheck: store.get('taskCheck', 'on'),
+  boardFix: store.get('boardFix', 'on'),
 });
 
 // ---------- واجهة ----------
@@ -224,6 +225,7 @@ const ui = {
   orb: $('orb'), dot: $('dot'), status: $('statusText'), log: $('log'),
   timer: $('timer'), cost: $('cost'), mute: $('muteBtn'), end: $('endBtn'),
   composer: $('composer'), text: $('textInput'),
+  meter: $('meter'), meterFill: $('meterFill'),
 };
 function setStatus(text, state = '') {
   ui.status.textContent = text;
@@ -389,9 +391,78 @@ function doneToday() {
 function addDoneToday(item) {
   store.set('done.today', JSON.stringify({ date: riyadhNow().date, items: [...doneToday(), item] }));
 }
-function boardSection(title) {
+// ---------- تصحيح اللوحة من Open Loops الحالي (مفتاح «تصحيح اللوحة») ----------
+// اللوحة يبنيها الماك كل ساعتين، وOpen Loops يتحدث كل دقيقتين عبر المزامنة: ما أُغلق يُحذف من العرض،
+// وما فُتح بعد آخر لوحة يُضاف قسماً. قراءة وعرض فقط — الملف نفسه لا يُمس. عند الشك يبقى البند (أهون أن يظهر مُغلق من أن يختفي مفتوح).
+function simTerms(s) {
+  const out = new Set();
+  for (const t of norm(s).split(/[^\p{L}\p{N}]+/u)) {
+    if (/\p{N}/u.test(t) ? t.length < 2 : t.length < 3) continue;
+    if (CHECK_STOP.has(t)) continue;
+    out.add(t);
+    if (t.startsWith('ال') && t.length > 4) out.add(t.slice(2)); // «الباقة» تطابق «باقة»
+  }
+  return out;
+}
+function coreOf(line) { // وصف البند وحده: بلا التاريخ وسياق البند («المشروع · الشخص · القناة») وصاحب الفعل والموعد وملاحظة واتساب والأقواس
+  let s = line.replace(/^- /, '').replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').split(' · واتساب:')[0].split(' ← ')[0];
+  const parts = s.split(' · ');
+  s = parts[parts.length - 1];
+  return s.split(' — ')[0].replace(/\d{4}-\d{2}-\d{2}/g, ' ').replace(/\([^)]*\)/g, ' ');
+}
+function taskOf(line) { // كذلك بلا «صاحب الفعل:» في أوله — للمقارنة مع أسطر الإغلاق فقط
+  const s = coreOf(line);
+  const i = s.indexOf(': ');
+  return i > -1 && i <= 30 ? s.slice(i + 1) : s;
+}
+function shared(A, B) { let n = 0; for (const w of A) if (B.has(w)) n++; return n; }
+// إزالة بند من اللوحة لأنه أُغلق: وصف بند اللوحة يكاد يكون كله داخل سطر الإغلاق —
+// الخطأ هنا يُخفي بنداً مفتوحاً، فالشرط متشدد من جهة اللوحة
+function closedMatch(boardLine, closedLine) {
+  const A = simTerms(taskOf(boardLine)), B = simTerms(taskOf(closedLine));
+  if (A.size < 3 || B.size < 3) return false;
+  const n = shared(A, B);
+  return n >= 3 && n / A.size >= 0.8 && n / B.size >= 0.6;
+}
+// منع تكرار بند مفتوح في قسم «جديد»: تطابق متساهل — الخطأ هنا مجرد تكرار في العرض
+function looseMatch(a, b) {
+  const A = simTerms(coreOf(a)), B = simTerms(coreOf(b));
+  if (!A.size || !B.size) return false;
+  const n = shared(A, B);
+  return n >= 2 && n / Math.min(A.size, B.size) >= 0.5;
+}
+// الأقسام التي تُصحَّح؛ «أُنجز ومُغلق» و«ينتظر ردك» و«الجديد في واتساب» تبقى كما كتبها الماك
+const FIX_SECTIONS = /^(مفتوح الآن|يبدو أنه أُنجز|مقترحات للـ)/;
+let boardCache = { key: '', text: '' };
+function boardText() {
   const n = vault.byPath.get('_System/Today Board.md');
-  const sec = n ? (n.text.split('## ' + title)[1] || '').split('\n## ')[0].replace(/^[^\n]*\n/, '').trim() : '';
+  if (!n) return '';
+  if (settings().boardFix === 'off') return n.text;
+  const done = doneToday();
+  const key = (vault.built || '') + '|' + n.text.length + '|' + done.length;
+  if (boardCache.key === key) return boardCache.text;
+  const { open, closed } = openLoopsLines();
+  // المطابقة على ما أُغلق اليوم وأمس فقط — المُغلق القديم يشبه مهامَّ متكررة ويرفع الخطأ
+  const d = new Date(Date.now() + 3 * 3600000);
+  const dates = [0, 1].map((k) => new Date(d - k * 86400000).toISOString().slice(0, 10));
+  const closedRef = [...closed.filter((c) => dates.some((x) => c.includes(x))), ...done.map((x) => '- ' + x)];
+  let removed = 0, section = '';
+  const kept = n.text.split('\n').filter((l) => {
+    if (l.startsWith('## ')) { section = l.slice(3); return true; }
+    if (!l.startsWith('- ') || !FIX_SECTIONS.test(section)) return true;
+    if (closedRef.some((c) => closedMatch(l, c))) { removed++; return false; }
+    return true;
+  });
+  const boardItems = n.text.split('\n').filter((l) => l.startsWith('- '));
+  const fresh = open.filter((o) => !/متابعة: يومية/.test(o) && !boardItems.some((b) => looseMatch(b, o)));
+  let text = kept.join('\n');
+  if (fresh.length) text += '\n\n## جديد بعد آخر لوحة (من Open Loops مباشرة، بلا سياق واتساب — قد يكرر بنداً أعلاه بصياغة أخرى)\n' + fresh.map((o) => '- ' + spoken(o.slice(2))).join('\n');
+  if (removed || fresh.length) text = text.replace(/(آخر تحديث:[^\n]*)/, `$1\n(صُحّحت داخل التطبيق من Open Loops الحالي: أُزيل ${removed} بند أُغلق بعدها، وأُضيف ${fresh.length} جديد. ملاحظات واتساب بعمر آخر لوحة كاملة.)`);
+  boardCache = { key, text };
+  return text;
+}
+function boardSection(title) {
+  const sec = (boardText().split('## ' + title)[1] || '').split('\n## ')[0].replace(/^[^\n]*\n/, '').trim();
   return sec && !/^- لا شيء/.test(sec) ? sec : '';
 }
 function whatsappDone() { return boardSection('يبدو أنه أُنجز اليوم'); }
@@ -777,7 +848,10 @@ async function markHeard(path) {
 }
 
 function systemInstruction() {
-  const parts = CORE_FILES.map((p) => vault.byPath.get(p)).filter(Boolean)
+  const parts = CORE_FILES.map((p) => {
+    const n = vault.byPath.get(p);
+    return n && { path: p, text: p === '_System/Today Board.md' ? boardText() : n.text };
+  }).filter(Boolean)
     .map((n) => `===== ${n.path} =====\n${n.text}`);
   const entities = vault.notes
     .filter((n) => /^(People|Projects|Companies)\//.test(n.path))
@@ -838,6 +912,29 @@ const audio = { ctx: null, stream: null, node: null, src: null, out: null, inAn:
 // فلا يمر إلا صوت الوليد الواضح فوقه (المقاطعة).
 const GATE = { noise: 0.01, barge: 0.08, bargeChunks: 3, hangMs: 600, tailMs: 500, preChunks: 5 };
 const gate = { loud: 0, openUntil: 0, pre: [] };
+
+// ---------- تشخيص الصوت: أرقام فقط (مستويات وعدادات)، يبقى على الجهاز ولا يُرفع ----------
+// الهدف: معرفة أين يضيع الكلام (البوابة؟ فلتر الصدى؟ Gemini؟) قبل أي تعديل على العتبات.
+const diag = { cur: null };
+function diagStart() {
+  diag.cur = { start: new Date().toISOString(), chunks: 0, sent: 0, opens: 0, bargeOpens: 0, lostWhilePlaying: 0, mutedWhilePlaying: 0, echoDropped: 0, voiceSum: 0, voiceN: 0, noiseSum: 0, noiseN: 0, maxRms: 0, transcripts: 0, transChars: 0, unclearConfirms: 0, reconnects: 0 };
+}
+function diagEnd() {
+  const c = diag.cur;
+  if (!c) return;
+  diag.cur = null;
+  c.end = new Date().toISOString();
+  c.avgVoice = c.voiceN ? +(c.voiceSum / c.voiceN).toFixed(4) : 0;
+  c.avgNoise = c.noiseN ? +(c.noiseSum / c.noiseN).toFixed(4) : 0;
+  c.maxRms = +c.maxRms.toFixed(4);
+  delete c.voiceSum; delete c.voiceN; delete c.noiseSum; delete c.noiseN;
+  try {
+    const arr = JSON.parse(store.get('diag.calls') || '[]');
+    arr.push(c);
+    while (arr.length > 30) arr.shift();
+    store.set('diag.calls', JSON.stringify(arr));
+  } catch {}
+}
 function rms16(u8) {
   const s = new Int16Array(u8.buffer, u8.byteOffset, u8.byteLength >> 1);
   let sum = 0;
@@ -860,15 +957,26 @@ function isEcho(text) {
 }
 function gateChunk(u8) {
   const now = Date.now(), playing = nextSpeaking();
-  if (playing && settings().barge === 'off') { gate.loud = 0; gate.pre = []; gate.openUntil = 0; return [new Uint8Array(u8.length)]; } // المقاطعة مُطفأة: المايك صامت وهو يتكلم
-  gate.loud = rms16(u8) >= (playing ? GATE.barge : GATE.noise) ? gate.loud + 1 : 0;
+  const r = rms16(u8);
+  const d = diag.cur;
+  if (d) {
+    d.chunks++;
+    if (r > d.maxRms) d.maxRms = r;
+    if (r < GATE.noise) { d.noiseSum += r; d.noiseN++; } else { d.voiceSum += r; d.voiceN++; }
+    if (playing && r >= GATE.noise && r < GATE.barge) d.lostWhilePlaying++; // صوت فوق عتبة الهدوء ضاع لأن نيكست يتكلم
+  }
+  if (playing && settings().barge === 'off') { gate.loud = 0; gate.pre = []; gate.openUntil = 0; if (d && r >= GATE.noise) d.mutedWhilePlaying++; return [new Uint8Array(u8.length)]; } // المقاطعة مُطفأة: المايك صامت وهو يتكلم
+  gate.loud = r >= (playing ? GATE.barge : GATE.noise) ? gate.loud + 1 : 0;
   if (gate.loud >= (playing ? GATE.bargeChunks : 1)) {
-    const out = now > gate.openUntil ? [...gate.pre, u8] : [u8]; // ما قبل بداية الكلام حتى لا يضيع أول الحرف
+    const fresh = now > gate.openUntil;
+    if (d && fresh) { d.opens++; if (playing) d.bargeOpens++; }
+    const out = fresh ? [...gate.pre, u8] : [u8]; // ما قبل بداية الكلام حتى لا يضيع أول الحرف
     gate.pre = [];
     gate.openUntil = now + GATE.hangMs;
+    if (d) d.sent += out.length;
     return out;
   }
-  if (now < gate.openUntil) return [u8]; // ذيل الجملة وما بين الكلمات
+  if (now < gate.openUntil) { if (d) d.sent++; return [u8]; } // ذيل الجملة وما بين الكلمات
   if (playing && !gate.loud) gate.pre = []; // أثناء كلام نيكست لا يُحفظ إلا الصوت العالي (بداية مقاطعة)، لا الصدى
   else gate.pre.push(u8);
   if (gate.pre.length > GATE.preChunks) gate.pre.shift();
@@ -1015,6 +1123,7 @@ async function confirmAction() {
   }
   pend.heard = '';
   pend.at = Date.now();
+  if (diag.cur) diag.cur.unclearConfirms++;
   return { status: 'لم يتضح رده — لم يُنفَّذ، وما زال ينتظر', heard: said || '(لم يُسمع شيء)', instruction: 'اسأله مرة واحدة باختصار: «أيوه ولا لا؟»، ثم استدعِ confirm_action بعد رده.' };
 }
 function announceIfIdle() {
@@ -1061,6 +1170,8 @@ async function startCall() {
   call.retries = 0;
   call.modelText = '';
   call.check = null;
+  diagStart();
+  ui.meter.hidden = false;
   ui.orb.disabled = true;
   setStatus('أحمّل العقل الثاني…', 'busy');
   try {
@@ -1171,10 +1282,14 @@ async function onMessage(m, ref) {
   if (sc.interrupted) stopPlayback();
   if (sc.inputTranscription?.text) {
     call.lastUser = Date.now();
+    if (diag.cur) { diag.cur.transcripts++; diag.cur.transChars += sc.inputTranscription.text.length; }
     // يُحتسب فقط كلامه بعد أن بدأ نيكست يسأله (لا بقايا تفريغ جملته الأولى)
     // يُحسب كلامه بعد أن بدأ نيكست يسأله، إلا ما هو صدى كلام نيكست نفسه («…صح؟») — بالكلمات لا بالتوقيت،
     // لأن نيكست يبدأ الرد فور سكوته فيصل تفريغ «أيوه» وهو يتكلم
-    if (call.pending && call.lastModel > call.pending.at && !isEcho(sc.inputTranscription.text)) call.pending.heard += ' ' + sc.inputTranscription.text;
+    if (call.pending && call.lastModel > call.pending.at) {
+      if (isEcho(sc.inputTranscription.text)) { if (diag.cur) diag.cur.echoDropped++; }
+      else call.pending.heard += ' ' + sc.inputTranscription.text;
+    }
     say('user', sc.inputTranscription.text);
   }
   for (const p of sc.modelTurn?.parts || []) {
@@ -1207,6 +1322,7 @@ function toolLabel(name, args = {}) {
 let reconnecting = false;
 async function reconnect(reason) {
   if (reconnecting || !call.active || call.ending) return;
+  if (diag.cur && reason !== 'goAway') diag.cur.reconnects++; // goAway تجديد دوري طبيعي
   reconnecting = true;
   setStatus('أجدد الاتصال…', 'busy');
   try {
@@ -1249,6 +1365,9 @@ function onClose(e, ref) {
 
 async function endCall(silent = false) {
   call.ending = true;
+  diagEnd();
+  ui.meter.hidden = true;
+  call.check = null;
   stopNewsWatch(); // ما لم يُعلن بعد يبقى heard: no ويُقال في المكالمة التالية
   call.pending = null; // فعل لم يُؤكَّد لا يُنفَّذ
   Object.assign(gate, { loud: 0, openUntil: 0, pre: [] });
@@ -1283,6 +1402,8 @@ function animate() {
     const lvl = speaking ? level(audio.outAn) : call.muted ? 0 : level(audio.inAn);
     ui.orb.style.setProperty('--lvl', lvl.toFixed(3));
     ui.orb.classList.toggle('speaking', speaking);
+    ui.meterFill.style.width = Math.min(100, (call.muted ? 0 : level(audio.inAn)) * 100).toFixed(1) + '%';
+    ui.meter.classList.toggle('playing', speaking);
     if (++call.tick % 15 === 0 && call.started) {
       const sec = Math.floor((Date.now() - call.started) / 1000);
       ui.timer.textContent = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
@@ -1434,7 +1555,18 @@ function showTaskCheck() {
   $('taskCheckToggle').classList.toggle('on', !on);
 }
 $('taskCheckToggle').addEventListener('click', () => { store.set('taskCheck', settings().taskCheck === 'off' ? 'on' : 'off'); showTaskCheck(); });
-$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); dlg.showModal(); });
+function showBoardFix() {
+  const on = settings().boardFix !== 'off';
+  $('boardFixToggle').textContent = on ? 'مفعّل — يخفي المُغلق ويضيف الجديد' : 'مُطفأ — اللوحة كما كتبها الماك';
+  $('boardFixToggle').classList.toggle('on', !on);
+}
+$('boardFixToggle').addEventListener('click', () => { store.set('boardFix', settings().boardFix === 'off' ? 'on' : 'off'); boardCache = { key: '', text: '' }; showBoardFix(); });
+$('diagExport').addEventListener('click', async () => {
+  const data = JSON.stringify({ gate: GATE, version: document.querySelector('script[src^="app.js"]')?.src.split('v=')[1] || '', calls: JSON.parse(store.get('diag.calls') || '[]') });
+  try { await navigator.clipboard.writeText(data); $('diagInfo').textContent = `✓ نُسخ (${JSON.parse(store.get('diag.calls') || '[]').length} مكالمة) — ألصقه لنيكست في محادثة Claude.`; }
+  catch { $('diagInfo').textContent = 'تعذّر النسخ: ' + data.slice(0, 160); }
+});
+$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
 for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
@@ -1476,4 +1608,4 @@ renderUsage();
 if (!settings().key) setStatus('ابدأ من الإعدادات ⚙︎');
 
 // للتجربة من الـ console فقط
-window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid };
+window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag };
