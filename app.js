@@ -354,13 +354,18 @@ function searchVault(query, limit = 6) {
   }));
 }
 
+// المقتطف: الأسطر التي فيها أكثر كلمات السؤال (حتى 3 أسطر)، لا نافذة حول أول كلمة —
+// فيصل نيكست إلى السطر الذي فيه الإجابة دون أن يقرأ الملف كله
 function snippet(n, ts) {
-  let pos = -1;
-  for (const t of ts) { pos = n._text.indexOf(t); if (pos !== -1) break; }
-  if (pos === -1) pos = 0;
-  // _text يطابق text حرفاً بحرف تقريباً (التشكيل قد يزيح قليلاً، وهذا مقبول للمقتطف)
-  const start = Math.max(0, pos - 120);
-  return n.text.slice(start, start + 320).replace(/\s+/g, ' ').trim();
+  const lines = n.text.split('\n').map((l) => l.trim()).filter((l) => l.length > 8 && !/^(---|aliases:|type:|tags:)/.test(l));
+  const scored = lines.map((l, i) => {
+    const nl = norm(l);
+    let s = 0;
+    for (const t of ts) if (nl.includes(t)) s += t.length >= 4 ? 2 : 1;
+    return { l, i, s };
+  }).filter((x) => x.s > 0).sort((a, b) => (b.s - a.s) || (b.i - a.i)); // التعادل: الأحدث (الأسفل في السجل) أولاً
+  if (!scored.length) return n.text.slice(0, 320).replace(/\s+/g, ' ').trim();
+  return scored.slice(0, 3).map((x) => (x.l.length > 300 ? x.l.slice(0, 300) + '…' : x.l)).join('\n');
 }
 
 function findNote(name) {
@@ -655,8 +660,11 @@ const TOOLS = [{
     },
     {
       name: 'open_loops',
-      // بلا parameters: Gemini يرفض كائناً بخصائص فارغة
-      description: 'البنود المفتوحة: الالتزامات والمواعيد والمستحقات غير المحصّلة لكل المشاريع.',
+      description: 'البنود المفتوحة: الالتزامات والمواعيد والمستحقات غير المحصّلة لكل المشاريع. وحين يسأل عن شيء قديم أو انتهى («كنت طلبت…»، «سلّم ولا لأ؟») مرّر query بكلمات السؤال، فتعود معها أسطر «مُغلق» المطابقة (متى أُغلق ولماذا).',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'اختياري: كلمات البحث في البنود المُغلقة (اسم الشخص، الموضوع، المشروع)' } },
+      },
     },
     {
       name: 'my_tasks',
@@ -678,7 +686,7 @@ const TOOLS = [{
     },
     {
       name: 'ask_big_next',
-      description: 'أرسل طلباً إلى نيكست الكبير (Claude على الماك) حين يحتاج ما لا تملكه: إضافة مهمة To Do، واتساب، الشيتات، Gmail، Trello، تقرير، أو تحليل عميق. للأسئلة استدعها مباشرة. للأفعال (مهمة، تعديل، رسالة) استدعها فوراً بنوع «فعل» دون أن تسأل؛ التطبيق يعلّقها ويعطيك جملة التأكيد الوحيدة.',
+      description: 'أرسل طلباً إلى نيكست الكبير (Claude على الماك) حين يحتاج ما لا تملكه: إضافة مهمة To Do، واتساب، الشيتات، Gmail، Trello، تقرير، أو تحليل عميق. سؤال عن شيء في الـ Vault (مهمة قديمة، من سلّم ماذا، قرار، تاريخ مشروع) ابحث عنه أولاً بـ search_vault أو open_loops مع query، ولا ترسله إلا إن لم تجده أو احتاج واتساب/الشيتات. للأسئلة استدعها مباشرة. للأفعال (مهمة، تعديل، رسالة) استدعها فوراً بنوع «فعل» دون أن تسأل؛ التطبيق يعلّقها ويعطيك جملة التأكيد الوحيدة.',
       parameters: {
         type: 'object',
         properties: {
@@ -770,8 +778,16 @@ async function runTool(name, args = {}, confirmed = false) {
       if (!n) return { error: 'الملف غير موجود', suggestions: searchVault(args.name || '', 3).map((x) => x.path) };
       return { path: n.path, text: n.text.slice(0, MAX_NOTE), truncated: n.text.length > MAX_NOTE };
     }
-    case 'open_loops':
-      return { text: openLoopsForVoice().slice(0, 16000) };
+    case 'open_loops': {
+      const out = { text: openLoopsForVoice().slice(0, 16000) };
+      if ((args.query || '').trim()) {
+        const { open, closed } = openLoopsLines();
+        const hits = rankLines(closed, args.query, [...open, ...closed]).slice(0, 6).map((x) => x.l.replace(/^- /, ''));
+        out.closed_matches = hits.length ? hits : [];
+        if (!hits.length) out.closed_note = 'لا بند مُغلق يطابق. جرّب search_vault بكلمات أخرى قبل نيكست الكبير.';
+      }
+      return out;
+    }
     case 'my_tasks': {
       const items = myTasks();
       call.check = settings().taskCheck !== 'off' && items.length
