@@ -539,7 +539,73 @@ function myTasks() {
       }
     }
   }
-  return items;
+  return notDoneToday(items);
+}
+// ما أُغلق يختفي من القوائم فوراً، من ثلاثة مصادر:
+// 1) ما أكّد إغلاقه بـ mark_done (طابقه التطبيق ببند محدد) — طوال اليوم؛
+// 2) طلب إغلاق جماعي أكّده عبر نيكست الكبير — 15 دقيقة فقط (حتى تصل المزامنة؛ فلا يبقى بند مخفياً خطأً)؛
+// 3) أسطر «مُغلق» بتاريخ اليوم/أمس في Open Loops — اللوحة قد تتأخر ساعتين عنها.
+// المطابقة داخل مقطع واحد (بين «؛» أو «،») لا في النص كله: أندر كلمة في البند + 60% من كلماته وكلمتان على الأقل.
+const PENDING_CLOSE_MS = 15 * 60000;
+function pendingCloses() {
+  try { return JSON.parse(store.get('done.pending') || '[]').filter((x) => Date.now() - x.at < PENDING_CLOSE_MS).map((x) => x.text); } catch { return []; }
+}
+function addPendingClose(text) {
+  const keep = (() => { try { return JSON.parse(store.get('done.pending') || '[]').filter((x) => Date.now() - x.at < PENDING_CLOSE_MS); } catch { return []; } })();
+  store.set('done.pending', JSON.stringify([...keep, { text, at: Date.now() }]));
+}
+function closedRecently() {
+  const d = new Date(Date.now() + 3 * 3600000);
+  const dates = [0, 1].map((k) => new Date(d - k * 86400000).toISOString().slice(0, 10));
+  return openLoopsLines().closed.filter((c) => dates.some((x) => c.startsWith('- ' + x)));
+}
+// جذر خفيف للكلمة: «التسليم»/«تسليمها»/«وخطة» ← «تسليم»/«خطه» — حتى تتطابق صيغ البند مع صيغ سطر الإغلاق
+function stem(w) {
+  let s = norm(w);
+  for (const p of ['وال', 'بال', 'لل', 'ال', 'و', 'ب', 'ل']) if (s.startsWith(p) && s.length - p.length >= 3) { s = s.slice(p.length); break; }
+  for (let pass = 0; pass < 2; pass++) { // «حملاتها» ← «حملات» ← «حمل»
+    const x = ['ها', 'هم', 'ات', 'ه'].find((x) => s.endsWith(x) && s.length - x.length >= 3);
+    if (!x) break;
+    s = s.slice(0, -x.length);
+  }
+  return s;
+}
+function stems(text) {
+  return new Set(norm(text).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3 && !CHECK_STOP.has(w)).map(stem));
+}
+function notDoneToday(items) {
+  const done = doneToday();
+  const refs = [...done, ...pendingCloses(), ...closedRecently().map((c) => taskOf(c))];
+  if (!refs.length) return items;
+  const segs = refs.flatMap((r) => r.split(/[؛،\n]/)).filter((s) => s.trim().length > 3).map(stems);
+  const terms = checkTerms(items); // مرتبة بالندرة بين البنود: الأولى أندرها
+  return items.filter((x, i) => {
+    if (done.includes(x)) return false;
+    const ts = [...new Set((terms[i] || []).map(stem))];
+    if (ts.length < 2) return true;
+    return !segs.some((S) => {
+      if (!S.has(ts[0])) return false;
+      const hit = ts.filter((t) => S.has(t)).length;
+      return hit >= 2 && hit / ts.length >= 0.6;
+    });
+  });
+}
+// قوائم القسم من اللوحة (للأسبوع والمقترحات): أسطر نظيفة، بلا ملاحظة واتساب، وبلا ما أُغلق اليوم
+function boardItems(title) {
+  return notDoneToday(boardSection(title).split('\n').filter((l) => l.startsWith('- ')).map(taskText));
+}
+const AR_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+// «— الأحد 25 أكتوبر» ← هل موعده خلال 7 أيام؟ (ما لا يُفهم تاريخه يُعدّ ضمن الأسبوع حتى لا يختفي)
+function withinWeek(line) {
+  const m = line.match(/(\d{1,2})\s+(يناير|فبراير|مارس|أبريل|ابريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)/);
+  if (!m) return true;
+  const mo = AR_MONTHS.findIndex((x) => norm(x) === norm(m[2]));
+  const { date } = riyadhNow();
+  const [y, cm, cd] = date.split('-').map(Number);
+  let due = Date.UTC(y, mo, +m[1]);
+  const today = Date.UTC(y, cm - 1, cd);
+  if (due < today - 180 * 864e5) due = Date.UTC(y + 1, mo, +m[1]); // ديسمبر ← يناير
+  return (due - today) / 864e5 <= 7;
 }
 // كلمات كل بند المميزة (الأندر بين البنود تحسم؛ العامة والتواريخ لا).
 // CHECK_STOP معرّف بعد ITEM_STOP أدناه، ويُستعمل هنا وقت الاستدعاء فقط.
@@ -552,50 +618,78 @@ function checkTerms(items) {
 // ---------- المهام على الشاشة (مفتاح «المهام على الشاشة») ----------
 // عرض فقط: نفس قائمة my_tasks مجمّعة، ✓ على ما ذكره نيكست في المكالمة، والضغط على بند يطلب من نيكست الحديث عنه
 // (قراءة لا فعل — أي إغلاق يمر بالتأكيد الصوتي كالعادة).
-const panel = { said: '', terms: [], items: [] };
+const panel = { said: '', terms: [], items: [], tab: '' };
+function panelList(items, opts = {}) {
+  const said = norm(panel.said);
+  const terms = checkTerms(items);
+  const ul = document.createElement('ul');
+  items.forEach((x, i) => {
+    const li = document.createElement('li');
+    const late = / — متأخر/.test(x);
+    const text = x.replace(/^عليك:\s*/, '').replace(/^متابعة يومية — ([^:]+):\s*(بند واحد، هو |\S+ بنود؛ )?/, 'متابعة $1: ').replace(/^متابعة (?!يومية)[^:]+:\s*/, opts.kind ? '$&' : '').replace(/ — (متأخر.*|اليوم)$/, '').split(' ← ')[0];
+    li.append(document.createTextNode(text));
+    if (late) { const s = document.createElement('span'); s.className = 'late'; s.textContent = 'متأخر'; li.append(s); }
+    // ✓ عرضيّ متشدد: أندر كلمة في البند + كلمتان (كلمات مثل «صرة» و«خطة» تتكرر في بنود كثيرة)
+    const ts = terms[i] || [];
+    const hit = ts.filter((t) => said.includes(t)).length;
+    if (ts.length && said.includes(ts[0]) && hit >= Math.min(2, ts.length)) li.classList.add('said');
+    li.addEventListener('click', () => askAbout(x, opts.kind));
+    ul.append(li);
+  });
+  return ul;
+}
 function renderTasks() {
   const box = document.getElementById('tasksPanel');
   if (!box) return;
   if (settings().tasksPanel === 'off' || !call.active || !vault.byPath.size) { box.hidden = true; return; }
   const items = myTasks();
+  const week = boardItems('مفتوح الآن — قادم').filter(withinWeek);
+  const props = boardItems('مقترحات للـ Open Loops (تنتظر قرارك)');
   panel.items = items;
-  panel.terms = checkTerms(items);
-  const said = norm(panel.said);
-  const groups = [['عليك', (x) => x.startsWith('عليك')], ['متابعة', (x) => x.startsWith('متابعة ')], ['عند غيرك', () => true]];
-  const used = new Set();
+  const tab = panel.tab || 'today';
   const body = document.getElementById('tasksBody');
   body.replaceChildren();
-  for (const [name, test] of groups) {
-    const list = items.map((x, i) => ({ x, i })).filter(({ x, i }) => !used.has(i) && test(x));
-    if (!list.length) continue;
-    list.forEach(({ i }) => used.add(i));
-    const h = document.createElement('div');
-    h.className = 'grp';
-    h.textContent = name === 'متابعة' ? (list[0].x.match(/^متابعة ([^:]+):/)?.[0].replace(':', '') || 'متابعة') : name;
-    const ul = document.createElement('ul');
-    for (const { x, i } of list) {
-      const li = document.createElement('li');
-      const late = / — متأخر/.test(x);
-      const text = x.replace(/^عليك:\s*/, '').replace(/^متابعة [^:]+:\s*/, '').replace(/ — (متأخر.*|اليوم)$/, '');
-      li.append(document.createTextNode(text));
-      if (late) { const s = document.createElement('span'); s.className = 'late'; s.textContent = 'متأخر'; li.append(s); }
-      // ✓ عرضيّ متشدد: أندر كلمة في البند + كلمتان على الأقل (كلمات مثل «صرة» و«خطة» تتكرر في بنود كثيرة)
-      const ts = panel.terms[i] || [];
-      const hit = ts.filter((t) => said.includes(t)).length;
-      if (ts.length && said.includes(ts[0]) && hit >= Math.min(2, ts.length)) li.classList.add('said');
-      li.addEventListener('click', () => askAbout(x));
-      ul.append(li);
-    }
-    body.append(h, ul);
+  const tabs = document.createElement('div');
+  tabs.className = 'tabs';
+  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length]]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tab' + (key === tab ? ' on' : '');
+    b.textContent = `${label} ${n}`;
+    b.addEventListener('click', (ev) => { ev.preventDefault(); panel.tab = key; store.set('tasksTab', key); renderTasks(); });
+    tabs.append(b);
   }
-  const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim());
-  if (appr.length) { const a = document.createElement('div'); a.className = 'appr'; a.textContent = 'ينتظر اعتمادك: ' + appr.join(' · '); body.append(a); }
+  body.append(tabs);
+  const empty = (msg) => { const d = document.createElement('div'); d.className = 'appr'; d.textContent = msg; body.append(d); };
+  if (tab === 'today') {
+    const groups = [['عليك', (x) => x.startsWith('عليك')], ['متابعة', (x) => x.startsWith('متابعة ')], ['عند غيرك', () => true]];
+    const used = new Set();
+    for (const [name, test] of groups) {
+      const list = items.filter((x, i) => !used.has(i) && test(x));
+      items.forEach((x, i) => { if (!used.has(i) && test(x)) used.add(i); });
+      if (!list.length) continue;
+      const h = document.createElement('div');
+      h.className = 'grp';
+      h.textContent = name === 'متابعة' ? (list[0].match(/^متابعة ([^:]+):/)?.[0].replace(':', '') || 'متابعة') : name;
+      body.append(h, panelList(list));
+    }
+    if (!items.length) empty('لا مهام موعدها اليوم.');
+    const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim());
+    if (appr.length) empty('ينتظر اعتمادك: ' + appr.join(' · '));
+  } else if (tab === 'week') {
+    if (week.length) body.append(panelList(week, { kind: 'week' })); else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
+  } else {
+    if (props.length) body.append(panelList(props, { kind: 'proposal' })); else empty('لا مقترحات تنتظر قرارك.');
+  }
   document.getElementById('tasksTitle').textContent = items.length ? `مهام اليوم (${items.length})` : 'لا مهام موعدها اليوم';
   box.hidden = false;
 }
-function askAbout(item) {
+function askAbout(item, kind) {
   if (!call.session) return;
-  call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) الوليد ضغط على هذا البند في الشاشة: «${item}». قل له ما تعرفه عنه بجملتين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.` });
+  const what = kind === 'proposal'
+    ? `هذا مقترح ينتظر قراره: «${item}». قل له بجملة ما هو ومن أين ظهر، واسأله: يضيفه بموعد، أو متابعة يومية، أو يتجاهله — ونفّذ حسب رده بقاعدة «المرور على مقترحات».`
+    : `«${item}». قل له ما تعرفه عنه بجملتين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.`;
+  call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) الوليد ضغط على هذا البند في الشاشة: ${what}` });
   note('tool', `👆 سأل عن: ${clip(item, 60)}`);
 }
 let panelTimer = 0;
@@ -892,6 +986,7 @@ async function runTool(name, args = {}, confirmed = false) {
     }
     case 'mark_done': {
       addDoneToday(args.item);
+      if (args.part) addDoneToday(args.part);
       const r = await addToInbox({ title: `إغلاق: ${args.part || args.item}`.slice(0, 60), content: `أغلق في _System/Open Loops.md البند: ${args.item}\n${args.part ? `الجزء المقصود تحديداً: «${args.part}»${args.asked ? ` (قال الوليد: «${args.asked}»)` : ''}\n` : ''}(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ${args.evidence || 'قال الوليد إنه انتهى'}.)\nوإن كان البند سطر خطة أو متابعة يضم عدة أجزاء: أغلق الجزء المقصود وحده (احذفه من السطر واذكره في «مُغلق»)، وأبقِ باقي السطر مفتوحاً كما هو.`, kind: BIG_KIND, type: 'فعل' });
       return { ok: true, path: r, note: 'لن يُذكر بعد الآن، ونيكست الكبير يغلقه في Open Loops خلال دقائق.' };
     }
@@ -1233,7 +1328,11 @@ async function confirmAction() {
       return { status: 'فشل التنفيذ', error: result.error, instruction: 'قل له بجملة إنه فشل والسبب باختصار.' };
     }
     note('tool', `✓ نُفّذ: ${summarize(pend.name, pend.args)}`);
-    if (pend.name === 'mark_done') setTimeout(renderTasks, 50); // يختفي من القائمة فوراً (doneToday)
+    // طلب إغلاق جماعي عبر نيكست الكبير: يُخفى ما فيه من القوائم مؤقتاً حتى تصل المزامنة
+    if (pend.name === 'ask_big_next' && /(أغلق|إغلاق|اغلاق|اقفل|أقفل|قفل|مُغلق|مغلق|خلص|انتهى|سلّم)/.test(`${pend.args.title || ''} ${pend.args.request || ''}`)) {
+      addPendingClose(`${pend.args.title || ''}\n${pend.args.request || ''}`);
+    }
+    if (pend.name === 'mark_done' || pend.name === 'ask_big_next') { boardCache = { key: '', text: '' }; setTimeout(renderTasks, 50); } // يختفي من القائمة فوراً
     callEvent(summarize(pend.name, pend.args).replace(/^هقفل:/, 'قُفل:').replace(/^هسجّل/, 'سُجّل').replace(/^هبعت/, 'أُرسل').replace(/\s*\((واتساب|مش ظاهر)[^)]*\)\s*$/, ''));
     return { status: 'نُفّذ', instruction: `قل جملة واحدة فقط: «${DONE_LINE[pend.name] || 'تم.'}» ولا تكرر ما سألته. وإن كان الوليد قد طلب أفعالاً أخرى لم تُرسل بعد، فاستدعِ أداة التالي منها الآن.` };
   }
@@ -1717,6 +1816,7 @@ function showTasksPanel() {
 $('tasksToggle').addEventListener('click', () => { store.set('tasksPanel', settings().tasksPanel === 'off' ? 'on' : 'off'); showTasksPanel(); renderTasks(); });
 // فتح القائمة وطيّها يُحفظ (في السيارة تبقى مطوية)
 $('tasksPanel').open = store.get('tasksOpen', 'off') === 'on';
+panel.tab = store.get('tasksTab', 'today');
 $('tasksPanel').addEventListener('toggle', () => store.set('tasksOpen', $('tasksPanel').open ? 'on' : 'off'));
 $('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); showTasksPanel(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
