@@ -193,7 +193,7 @@ async function unlock() {
   }
   lock.locked = false;
   document.getElementById('lockScreen').hidden = true;
-  setTimeout(() => refreshIdle(true), 0);
+  setTimeout(() => { refreshIdle(true); showComposer(); }, 0);
 }
 
 function lockNow() {
@@ -220,6 +220,7 @@ const settings = () => ({
   boardFix: store.get('boardFix', 'on'),
   opener: store.get('opener', 'on'),
   tasksPanel: store.get('tasksPanel', 'on'),
+  chat: store.get('chat', 'on'),
 });
 
 // ---------- ذاكرة مكالمات اليوم ----------
@@ -232,7 +233,19 @@ function callMemory() {
   } catch { return []; }
 }
 function callEvent(text) {
+  if (!call.active) { memoryEvent(text); return; } // من الدردشة: إلى ذاكرة اليوم مباشرة
   if (call.events && !call.events.includes(text)) call.events.push(text);
+}
+// حدث من الدردشة: يُضاف إلى مدخل «دردشة» واحد لكل جلسة كتابة (منذ فتح التطبيق)
+function memoryEvent(text) {
+  const calls = callMemory();
+  let last = calls[calls.length - 1];
+  if (!last || last.sid !== chat.sid) {
+    last = { at: clockNow(), via: 'دردشة', sid: chat.sid, events: [] };
+    calls.push(last);
+  }
+  if (!last.events.includes(text)) last.events.push(text);
+  store.set('calls.today', JSON.stringify({ date: riyadhNow().date, calls: calls.slice(-8) }));
 }
 function saveCallMemory() {
   const ev = call.events || [];
@@ -574,10 +587,32 @@ function stem(w) {
 function stems(text) {
   return new Set(norm(text).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3 && !CHECK_STOP.has(w)).map(stem));
 }
+// ربط البطاقة بسطرها في Open Loops بمطابقة الإغلاق نفسها (IDF على كل البنود): تُخفى فقط إن كان سطرها
+// — أو الجزء المقصود منه في سطر خطة — قد أُغلق. يلتقط اختلاف الصياغة بين اللوحة وOpen Loops («الذكاء الاصطناعي»/«AI»)
+function closedByLine(item, done, recent) {
+  const { open, closed } = openLoopsLines();
+  // الوصف وحده (قبل «—»): أسطر «مُغلق» تذكر أحياناً بعده الجزء الباقي المفتوح («باقي البند (…) مفتوح»)
+  const cut = (l) => l.split(' — ')[0];
+  const openCut = open.map(cut), recentCut = recent.map(cut);
+  const all = [...openCut, ...closed.map(cut)];
+  const r = rankLines(all, item, all);
+  if (!r.length || (r[1] && r[1].s >= r[0].s * 0.83)) return false; // لا ربط واضح ← لا إخفاء
+  const top = r[0].l;
+  if (recentCut.includes(top)) return true; // سطره أُغلق اليوم/أمس (أسطر الإغلاق لا تحمل إلا الجزء المُغلق)
+  if (!openCut.includes(top)) return false; // مُغلق قديم: لا يُبنى عليه
+  // سطره ما زال مفتوحاً في النسخة: يُخفى فقط إن أكّد إغلاقه في هذه الجلسة (وجزؤه المقصود إن كان سطر خطة)
+  const line = open[openCut.indexOf(top)].replace(/^- /, '');
+  const segs = lineSegments(line);
+  const part = segs.length > 1 ? bestSegment(line, item) : null;
+  if (segs.length > 1 && !part) return false;
+  return done.some((d) => d.length > 40 && (line.startsWith(d.slice(0, 120)) || d.startsWith(line.slice(0, 120)))) && (!part || done.includes(part));
+}
 function notDoneToday(items) {
   const done = doneToday();
-  const refs = [...done, ...pendingCloses(), ...closedRecently().map((c) => taskOf(c))];
+  const recent = closedRecently();
+  const refs = [...done, ...pendingCloses(), ...recent.map((c) => taskOf(c))];
   if (!refs.length) return items;
+  items = items.filter((x) => !closedByLine(x, done, recent));
   const segs = refs.flatMap((r) => r.split(/[؛،\n]/)).filter((s) => s.trim().length > 3).map(stems);
   const terms = checkTerms(items); // مرتبة بالندرة بين البنود: الأولى أندرها
   return items.filter((x, i) => {
@@ -949,13 +984,19 @@ function summarize(name, args) {
   if (name === 'add_to_inbox') return `هسجّل في الـ Inbox: ${args.title}`;
   return `هبعت لنيكست الكبير: ${args.request || args.title}`;
 }
-async function runTool(name, args = {}, confirmed = false) {
+async function runTool(name, args = {}, confirmed = false, mode = 'voice') {
   if (!confirmed && name === 'mark_done') {
     const v = verifyItem(args.item || '');
     if (v.state === 'closed') return { status: 'مقفول بالفعل — لم يُرسل شيء', closed_line: v.line, instruction: 'قل له إنه مقفول بالفعل، ومتى (من السطر).' };
     if (v.state === 'missing') return { status: 'لا يوجد بند مفتوح بهذا الوصف — لم يُرسل شيء', instruction: 'اسأله أي بند يقصد، أو اقرأ open_loops لتجده.' };
     if (v.state === 'ambiguous') return { status: 'أكثر من بند مفتوح يطابق — لم يُرسل شيء', candidates: v.candidates, instruction: 'اسأله أيها يقصد، ثم استدعِ الأداة بوصفه الدقيق.' };
     args = { ...args, asked: args.item, item: v.line.slice(0, 160), part: v.part, evidence: args.evidence || (v.evidence ? 'حسب واتساب: ' + v.evidence : ''), _wa: v.evidence };
+  }
+  if (!confirmed && GATED(name, args) && mode === 'chat') {
+    // الدردشة: الفعل يُعلَّق ويظهر تحته زرّا «تأكيد/إلغاء» — لا يُنفَّذ إلا بالضغط
+    if (chat.pending) return { status: 'فعل آخر ما زال ينتظر زر التأكيد — هذا الطلب لم يُسجَّل', pending_now: summarize(chat.pending.name, chat.pending.args), instruction: 'قل له إن عليه أن يؤكد أو يلغي الفعل الأول بالزر، ثم يطلب هذا من جديد.' };
+    chat.pending = { name, args };
+    return { status: 'بانتظار ضغط الوليد زر «تأكيد» في التطبيق — لم يُنفَّذ', will_do: summarize(name, args), instruction: 'قل له بجملة واحدة ما سيحدث (من will_do) وأن يضغط «تأكيد» تحته. لا تطلب منه كتابة «أيوه»، ولا تقل إنه تم.' };
   }
   if (!confirmed && GATED(name, args)) {
     if (call.pending) {
@@ -1083,7 +1124,7 @@ async function markHeard(path) {
   });
 }
 
-function systemInstruction() {
+function systemInstruction(opts = {}) {
   const parts = CORE_FILES.map((p) => {
     const n = vault.byPath.get(p);
     return n && { path: p, text: p === '_System/Today Board.md' ? boardText() : n.text };
@@ -1109,16 +1150,21 @@ function systemInstruction() {
       const u = unheardAnswers();
       return u.length ? [`===== ردود جديدة من نيكست الكبير لم يسمعها الوليد =====\n${u.map((x, i) => `${i + 1}) ${x.title}:\n${x.answer}`).join('\n\n')}`] : [];
     })(),
-    call.firstToday
+    opts.forChat ? '' : call.firstToday
       ? '===== أول مكالمة اليوم =====\nهذه أول مكالمة للوليد اليوم. بعد صورة اليوم (أو بعد ما يطلبه)، اسأله سؤالاً واحداً قصيراً إن كان يريد المرور على القرارات المعلّقة (البنود بلا موعد والمقترحات) — بلا سرد أرقام كثيرة.'
       : 'ليست أول مكالمة اليوم: لا تذكر البنود بلا موعد ولا المقترحات من نفسك؛ فقط إن سأل.',
     ...(() => {
       const mem = callMemory();
-      return mem.length ? [`===== مكالماتك السابقة اليوم مع الوليد (ما حدث فعلاً) =====\n${mem.map((c) => `- ${c.at}: ${c.events.join('؛ ')}`).join('\n')}\nاستعملها للاستمرارية كزميل يتذكر («زي ما قلنا الصبح…»): لا تعرض عليه ما قُفل أو انتهى، ولا تسرد هذا القسم عليه.`] : [];
+      return mem.length ? [`===== مكالماتك ودردشاتك السابقة اليوم مع الوليد (ما حدث فعلاً) =====\n${mem.map((c) => `- ${c.at}${c.via ? ' (' + c.via + ')' : ''}: ${c.events.join('؛ ')}`).join('\n')}\nاستعملها للاستمرارية كزميل يتذكر («زي ما قلنا الصبح…»): لا تعرض عليه ما قُفل أو انتهى، ولا تسرد هذا القسم عليه.`] : [];
+    })(),
+    ...(() => {
+      if (opts.forChat) return []; // في الدردشة نفسها تصل الرسائل كمحادثة لا كتعليمات
+      const msgs = chatToday().slice(-12);
+      return msgs.length ? [`===== دردشتكما النصية اليوم (آخر الرسائل) =====\n${msgs.map((m) => `${m.role === 'user' ? 'الوليد' : 'نيكست'} (${m.at}): ${m.text}`).join('\n')}\nإن عاد إليها في المكالمة فأكمل من حيث توقفتما، ولا تعِد ما قيل.`] : [];
     })(),
     '===== الختام =====\nإن ودّعك أو قال ما معناه «خلاص كده»: اختم بجملة واحدة بما تم فعلاً في هذه المكالمة إن نُفّذ شيء («تمام، قفلنا ريفي وبعتنا سؤال لنيكست الكبير»)، ثم ودّعه. لا تذكر شيئاً لم يُنفَّذ.',
     `آخر تحديث للفهرس: ${vault.built || 'غير معروف'}.`,
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 }
 
 // ---------- الصوت ----------
@@ -1461,6 +1507,7 @@ async function startCall() {
     renderTasks();
     acquireWakeLock();
     ui.mute.hidden = ui.end.hidden = ui.composer.hidden = false;
+    showComposer();
     ui.orb.classList.remove('idle');
     ui.orb.textContent = 'إنهاء';
     ui.orb.setAttribute('aria-label', 'إنهاء المكالمة');
@@ -1657,7 +1704,8 @@ async function endCall(silent = false) {
   ui.orb.className = 'orb idle';
   ui.orb.textContent = 'اتصل';
   ui.orb.setAttribute('aria-label', 'ابدأ المكالمة');
-  ui.mute.hidden = ui.end.hidden = ui.composer.hidden = true;
+  ui.mute.hidden = ui.end.hidden = true;
+  setTimeout(showComposer, 0);
   ui.mute.classList.remove('on');
   ui.mute.textContent = 'كتم المايك';
   call.muted = false;
@@ -1721,13 +1769,154 @@ ui.mute.addEventListener('click', () => {
 ui.composer.addEventListener('submit', (e) => {
   e.preventDefault();
   const t = ui.text.value.trim();
-  if (!t || !call.session) return;
+  if (!t) return;
+  if (!call.session) { if (!call.active && settings().chat !== 'off') { ui.text.value = ''; chatSend(t); } return; }
   note('user', t);
   call.lastUser = Date.now();
   if (call.pending) call.pending.heard += ' ' + t;
   call.session.sendRealtimeInput({ text: t });
   ui.text.value = '';
 });
+
+// ---------- الدردشة دون اتصال ----------
+// نموذج Gemini نصي بالأدوات والتعليمات نفسها؛ الأفعال بزرّي تأكيد/إلغاء؛ محادثة اليوم على الجهاز وتصل للمكالمة التالية.
+const chat = { pending: null, busy: false, sid: Date.now().toString(36) };
+const CHAT_PREFIX = `===== قناة هذه الجلسة: دردشة نصية في التطبيق (لا مكالمة) =====
+- تجاهل قواعد الكلام المسموع والتأكيد الصوتي في Voice Assistant: لا confirm_action ولا «صح؟». أي فعل (إغلاق، تسجيل، طلب لنيكست الكبير) استدعِ أداته مباشرة، فيُعلَّق ويظهر للوليد زرّا «تأكيد/إلغاء».
+- ردود مكتوبة قصيرة ومباشرة: سطر إلى ثلاثة، ونقاط قصيرة إن لزم. بلهجته كما في المكالمة.
+- للأسئلة السريعة: ابحث في الـ Vault بأدواتك وأجب مباشرة، واذكر المصدر باختصار.
+- لا تبادر بصورة اليوم ولا بالقرارات المعلّقة إلا إن سأل.`;
+function clockNow() {
+  const [hh, mm] = riyadhNow().time.split(':').map(Number);
+  return `${hh % 12 || 12}:${String(mm).padStart(2, '0')} ${hh < 12 ? 'ص' : 'م'}`;
+}
+function chatToday() {
+  try { const d = JSON.parse(store.get('chat.today') || '{}'); return d.date === riyadhNow().date ? d.msgs : []; } catch { return []; }
+}
+function chatPush(role, text) {
+  const msgs = [...chatToday(), { role, text, at: clockNow() }].slice(-40);
+  store.set('chat.today', JSON.stringify({ date: riyadhNow().date, msgs }));
+}
+const modelVer = (n) => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+// أحدث نموذج Flash نصي متاح لمفتاحه (لا تخمين لاسم)، ويُحفظ؛ يُعاد الاختيار إن فشل
+async function chatModel(ai) {
+  const cached = store.get('chat.model');
+  if (cached) return cached;
+  const names = [];
+  try {
+    const pager = await ai.models.list({ config: { pageSize: 200 } });
+    for await (const m of pager) {
+      const n = (m.name || '').replace(/^models\//, '');
+      const acts = m.supportedActions || [];
+      if (/^gemini-.*flash/.test(n) && !/(live|tts|image|audio|embed|native)/.test(n) && (!acts.length || acts.includes('generateContent'))) names.push(n);
+    }
+  } catch (e) { console.warn('models.list', e); }
+  const stable = names.filter((n) => !/(preview|exp|lite)/.test(n));
+  const pool = stable.length ? stable : names.filter((n) => !/lite/.test(n));
+  pool.sort((a, b) => (modelVer(b) - modelVer(a)) || (a.length - b.length));
+  const best = pool[0] || 'gemini-2.5-flash';
+  store.set('chat.model', best);
+  return best;
+}
+function closeLike(args) {
+  return /(أغلق|إغلاق|اغلاق|اقفل|أقفل|قفل|مُغلق|مغلق|خلص|انتهى|سلّم)/.test(`${args.title || ''} ${args.request || ''}`);
+}
+async function chatSend(text) {
+  const s = settings();
+  if (lock.locked) return;
+  if (!s.key) { $('settings').showModal(); setStatus('أكمل الإعدادات أولاً', 'err'); return; }
+  if (chat.busy) return;
+  chat.busy = true;
+  const history = chatToday().slice(-20).map((m) => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
+  note('user', text);
+  chatPush('user', text);
+  setStatus('نيكست يكتب…', 'busy');
+  try {
+    if (!vault.byPath.size) await loadVault();
+    const ai = new GoogleGenAI({ apiKey: s.key });
+    const tools = [{ functionDeclarations: TOOLS[0].functionDeclarations.filter((f) => !['confirm_action', 'answers_heard'].includes(f.name)) }];
+    const si = CHAT_PREFIX + '\n\n' + systemInstruction({ forChat: true });
+    const contents = [...history, { role: 'user', parts: [{ text }] }];
+    let reply = '', model = await chatModel(ai);
+    const gen = () => ai.models.generateContent({ model, contents, config: { systemInstruction: si, tools } });
+    for (let round = 0; round < 6; round++) {
+      let res;
+      try { res = await gen(); }
+      catch (e) {
+        // النموذج المحفوظ لم يعد متاحاً: يُعاد الاختيار مرة واحدة
+        if (round === 0 && /not found|not supported|404/i.test(String(e.message || e))) { store.set('chat.model', ''); model = await chatModel(ai); res = await gen(); }
+        else throw e;
+      }
+      const fcs = res.functionCalls || [];
+      if (!fcs.length) { reply = res.text || ''; break; }
+      contents.push(res.candidates[0].content);
+      const parts = [];
+      for (const fc of fcs) {
+        note('tool', toolLabel(fc.name, fc.args || {}));
+        let r;
+        try { r = await runTool(fc.name, fc.args || {}, false, 'chat'); } catch (e) { r = { error: String(e.message || e) }; }
+        parts.push({ functionResponse: { name: fc.name, response: r } });
+      }
+      contents.push({ role: 'user', parts });
+    }
+    reply = reply.trim() || 'ما قدرتش أوصل لإجابة، جرّب تصيغها تاني.';
+    note('next', reply);
+    chatPush('next', reply);
+    if (chat.pending) renderChatConfirm();
+    setStatus('جاهز');
+  } catch (e) {
+    console.error(e);
+    note('sys', 'تعذّر الرد: ' + (e.message || e));
+    setStatus('تعذّر الرد', 'err');
+  } finally {
+    chat.busy = false;
+  }
+}
+function renderChatConfirm() {
+  const p = chat.pending;
+  if (!p) return;
+  const box = document.createElement('div');
+  box.className = 'msg tool confirm';
+  const label = document.createElement('div');
+  label.textContent = '⏸ ' + summarize(p.name, p.args);
+  const row = document.createElement('div');
+  row.className = 'row';
+  const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'pill primary'; ok.textContent = 'تأكيد';
+  const no = document.createElement('button'); no.type = 'button'; no.className = 'pill'; no.textContent = 'إلغاء';
+  row.append(ok, no);
+  box.append(label, row);
+  ui.log.appendChild(box);
+  bubble = { role: null, el: null };
+  ui.log.scrollTop = ui.log.scrollHeight;
+  const finish = (txt) => { row.remove(); label.textContent = txt; };
+  ok.addEventListener('click', async () => {
+    if (chat.pending !== p) return finish('انتهت صلاحية هذا الطلب');
+    chat.pending = null;
+    ok.disabled = no.disabled = true;
+    let r;
+    try { r = await runTool(p.name, p.args, true, 'chat'); } catch (e) { r = { error: String(e.message || e) }; }
+    if (r.error) { finish('✗ فشل: ' + r.error); return; }
+    finish('✓ نُفّذ: ' + summarize(p.name, p.args));
+    memoryEvent(summarize(p.name, p.args).replace(/^هقفل:/, 'قُفل:').replace(/^هسجّل/, 'سُجّل').replace(/^هبعت/, 'أُرسل').replace(/\s*\((واتساب|مش ظاهر)[^)]*\)\s*$/, ''));
+    if (p.name === 'ask_big_next' && closeLike(p.args)) addPendingClose(`${p.args.title || ''}\n${p.args.request || ''}`);
+    boardCache = { key: '', text: '' };
+    renderTasks();
+    const line = DONE_LINE[p.name] || 'تم.';
+    note('next', line);
+    chatPush('next', line);
+  });
+  no.addEventListener('click', () => {
+    if (chat.pending === p) chat.pending = null;
+    finish('✗ أُلغي');
+    chatPush('next', 'تمام، ألغيتها.');
+  });
+}
+function showComposer() {
+  ui.composer.hidden = !(call.active || (settings().chat !== 'off' && !lock.locked));
+  ui.text.placeholder = call.active ? 'أو اكتب هنا…' : 'اسأل نيكست كتابةً…';
+}
+// محادثة اليوم تظهر عند فتح التطبيق (آخر 12 رسالة)
+for (const m of chatToday().slice(-12)) note(m.role === 'user' ? 'user' : 'next', m.text);
 
 // الإعدادات
 const dlg = $('settings');
@@ -1860,7 +2049,13 @@ function setTasksOpen(open) {
 }
 setTasksOpen(store.get('tasksOpen', 'off') === 'on');
 $('tasksHead').addEventListener('click', () => setTasksOpen(!$('tasksPanel').classList.contains('open')));
-$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); showTasksPanel(); dlg.showModal(); });
+function showChatToggle() {
+  const on = settings().chat !== 'off';
+  $('chatToggle').textContent = on ? 'مفعّلة — اكتب له دون اتصال' : 'مُطفأة — الكتابة أثناء المكالمة فقط';
+  $('chatToggle').classList.toggle('on', !on);
+}
+$('chatToggle').addEventListener('click', () => { store.set('chat', settings().chat === 'off' ? 'on' : 'off'); showChatToggle(); showComposer(); });
+$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); showTasksPanel(); showChatToggle(); dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
 for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
@@ -1913,6 +2108,7 @@ async function refreshIdle(force = false) {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIdle(); });
 refreshIdle(true);
+showComposer();
 
 // للتجربة من الـ console فقط
-window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag, renderTasks, panel, indexNotes, vault };
+window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag, renderTasks, panel, indexNotes, vault, chat, chatSend, chatToday, callMemory, renderChatConfirm, systemInstruction };

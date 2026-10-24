@@ -120,6 +120,8 @@
   .tasks .tabs { display: flex; gap: 6px; padding: 10px 0 2px; position: sticky; top: 0; background: var(--card); z-index: 1; }
   .tasks .tab { flex: 1; background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 10px; padding: 6px 4px; font: inherit; font-size: 13px; cursor: pointer; }
   .tasks .tab.on { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--pink), var(--indigo)); }
+  .msg.confirm { align-self: stretch; text-align: center; font-size: 13px; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+  .msg.confirm .row { display: flex; gap: 8px; justify-content: center; margin-top: 8px; }
   .composer { display: flex; gap: 8px; margin-top: 8px; }
   .composer input {
     flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); color: var(--fg);
@@ -234,6 +236,9 @@
     <label>المهام على الشاشة</label>
     <div class="lock-row"><button class="pill" type="button" id="tasksToggle">مفعّل</button></div>
     <div class="check">مهام اليوم والأسبوع والمقترحات أثناء المكالمة. ✓ على ما ذكره نيكست، وما تؤكد إغلاقه يختفي فوراً، والضغط على بند يسأله عنه.</div>
+    <label>الدردشة دون اتصال</label>
+    <div class="lock-row"><button class="pill" type="button" id="chatToggle">مفعّلة</button></div>
+    <div class="check">مربع الكتابة يعمل دون مكالمة للأسئلة السريعة؛ الأفعال بزر تأكيد، ومحادثة اليوم تكمل في المكالمة.</div>
     <label>يبدأ هو أول مكالمة اليوم</label>
     <div class="lock-row"><button class="pill" type="button" id="openerToggle">مفعّل</button></div>
     <div class="check">في أول مكالمة كل يوم يحيّيك ويعطيك صورة اليوم دون أن تسأل.</div>
@@ -255,6 +260,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261024i"></script>
+<script type="module" src="app.js?v=20261024j"></script>
 </body>
 </html>
