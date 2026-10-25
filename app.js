@@ -542,14 +542,18 @@ function myTasks() {
     const line = taskText(raw);
     const m = line.match(/^تابع مهام (.+?) لليوم:\s*(.*)$/);
     if (!m) { items.push(line); continue; }
+    let lastDay = '';
     for (const seg of splitTop(m[2], ['؛'])) {
       const late = /^و?المتأخر\s*:/.test(seg);
       const body = seg.replace(/^و?المتأخر\s*:\s*/, '');
       // اللوحة قد تفصل أيام الخطة بـ« · » وتسبق كل يوم بـ«من الأحد 18:» — كلاهما ليس من المهمة
       for (const sub of splitTop(body, [' · ', '، و', '، '])) {
-        const task = sub.replace(/^و/, '').replace(/^من\s+\S+\s+\d{1,2}\s*:\s*/, '').trim();
+        const s0 = sub.replace(/^و/, '');
+        const from = s0.match(/^من\s+(\S+\s+\d{1,2})\s*:/);
+        if (from) lastDay = from[1]; // يوم الخطة يسري على ما بعده حتى يوم جديد
+        const task = s0.replace(/^من\s+\S+\s+\d{1,2}\s*:\s*/, '').trim();
         if (!task || /^لا شيء/.test(task)) continue;
-        items.push(`متابعة ${m[1]}: ${task}${late ? ' — متأخر' : ''}`);
+        items.push(`متابعة ${m[1]}: ${task}${late ? (lastDay ? ` — متأخر منذ ${lastDay}` : ' — متأخر') : ''}`);
       }
     }
   }
@@ -661,10 +665,23 @@ function panelList(items, opts = {}) {
   const ul = document.createElement('ul');
   items.forEach((x, i) => {
     const li = document.createElement('li');
-    const late = / — متأخر/.test(x);
-    const text = x.replace(/^عليك:\s*/, '').replace(/^متابعة يومية — ([^:]+):\s*(بند واحد، هو |\S+ بنود؛ )?/, 'متابعة $1: ').replace(/^متابعة (?!يومية)[^:]+:\s*/, opts.kind ? '$&' : '').replace(/ — (متأخر.*|اليوم)$/, '').split(' ← ')[0];
-    li.append(document.createTextNode(text));
-    if (late) { const s = document.createElement('span'); s.className = 'late'; s.textContent = 'متأخر'; li.append(s); }
+    const info = dueInfo(x.split(' ← ')[0]);
+    const text = x.replace(/^عليك:\s*/, '').replace(/^متابعة يومية — ([^:]+):\s*(بند واحد، هو |\S+ بنود؛ )?/, 'متابعة $1: ').replace(/^متابعة (?!يومية)[^:]+:\s*/, opts.kind ? '$&' : '').split(' ← ')[0].replace(/ — [^—]*$/, '');
+    const main = document.createElement('div');
+    main.className = 'main';
+    main.append(document.createTextNode(text));
+    const meta = document.createElement('div');
+    meta.className = 'meta-sm';
+    const proj = projectOf(x);
+    const bits = [];
+    if (proj) bits.push(proj);
+    if (info && info.due && info.due !== 'اليوم') bits.push((info.days > 0 ? 'كان موعده ' : '') + info.due.replace(/^متأخر منذ /, ''));
+    if (info && info.due === 'اليوم') bits.push('موعده اليوم');
+    meta.textContent = bits.join(' · ');
+    li.append(main);
+    const lbl = lateLabel(info?.days);
+    if (lbl || (/ — متأخر/.test(x) && info?.days == null)) { const s = document.createElement('span'); s.className = 'late'; s.textContent = lbl || 'متأخر'; li.append(s); }
+    if (meta.textContent) main.append(meta);
     // ✓ عرضيّ متشدد: أندر كلمة في البند + كلمتان (كلمات مثل «صرة» و«خطة» تتكرر في بنود كثيرة)
     const ts = terms[i] || [];
     const hit = ts.filter((t) => said.includes(t)).length;
@@ -721,6 +738,49 @@ function renderTasks() {
   const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
   if (body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
   box.hidden = false;
+}
+// «— متأخر منذ الأربعاء 21 أكتوبر» / «منذ أمس السبت» / «منذ الأحد 18» ← { due, days }
+function dueInfo(x) {
+  const m = x.match(/ — (متأخر(?: منذ (.+))?|اليوم|(.+))$/);
+  if (!m) return null;
+  if (m[1] === 'اليوم') return { due: 'اليوم', days: 0 };
+  const when = (m[2] || m[3] || '').trim();
+  if (!when) return { due: '', days: null };
+  if (/أمس/.test(when)) return { due: when.replace(/^أمس\s*/, 'أمس '), days: 1 };
+  if (/^غداً|^غدا|^بكرة/.test(when)) return { due: when, days: -1 };
+  const d = when.match(/(\d{1,2})(?:\s+(\S+))?/);
+  if (!d) return { due: when, days: null };
+  const { date } = riyadhNow();
+  const [y, cm, cd] = date.split('-').map(Number);
+  let mo = d[2] ? AR_MONTHS.findIndex((x) => norm(x) === norm(d[2])) : -1;
+  let due;
+  if (mo >= 0) due = Date.UTC(y, mo, +d[1]);
+  else { due = Date.UTC(y, cm - 1, +d[1]); if (+d[1] > cd) due = Date.UTC(y, cm - 2, +d[1]); } // بلا شهر: آخر مرة مرّ فيها هذا اليوم
+  const days = Math.round((Date.UTC(y, cm - 1, cd) - due) / 864e5);
+  return { due: when, days };
+}
+function lateLabel(days) {
+  if (days == null || days <= 0) return '';
+  if (days === 1) return 'متأخر يوم';
+  if (days === 2) return 'متأخر يومين';
+  return days <= 10 ? `متأخر ${days} أيام` : `متأخر ${days} يوماً`;
+}
+// مشروع البند: سطره في Open Loops (مفتوح/مقترحات/مُغلق) بالمطابقة نفسها؛ وفي سطر الخطة يُضاف اسم الجزء («فرق · صرة»)
+function projectOf(item) {
+  const n = vault.byPath.get(OPEN_LOOPS);
+  if (!n) return '';
+  const lines = n.text.split('\n').filter((l) => l.startsWith('- [[') || /^- \d{4}-\d{2}-\d{2} · \[\[/.test(l)).map((l) => l.split(' — ')[0]);
+  const r = rankLines(lines, item, lines);
+  if (!r.length) return '';
+  const projIn = (l) => (l.match(/\[\[([^\]|]+)/) || [])[1] || '';
+  const proj = projIn(r[0].l);
+  // تقارب في المطابقة مقبول فقط إن كان المرشحان من المشروع نفسه
+  if (r[1] && r[1].s >= r[0].s * 0.83 && projIn(r[1].l) !== proj) return '';
+  const line = r[0].l.replace(/^- /, '');
+  const segs = lineSegments(line);
+  const part = segs.length > 1 ? bestSegment(line, item) : null;
+  const label = part && /^[^:]{2,25}:/.test(part) ? part.split(':')[0].trim() : '';
+  return label && label !== proj ? `${proj} · ${label}` : proj;
 }
 function askAbout(item, kind) {
   if (!call.session) { // خارج المكالمة: الضغط يبدأ المكالمة، ونيكست يفتتح بهذا البند
@@ -1044,7 +1104,7 @@ async function runTool(name, args = {}, confirmed = false, mode = 'voice') {
         .map((l) => l.slice(2).trim());
       return {
         count: items.length,
-        items,
+        items: items.map((x) => { const p = projectOf(x), d = dueInfo(x), l = lateLabel(d?.days); return `${x}${l ? ` (${l})` : ''}${p ? ` [المشروع: ${p}]` : ''}`; }),
         upcoming: boardCount('مفتوح الآن — قادم'),
         undated: boardCount('مفتوح الآن — بلا موعد (يحتاج قرارك)'),
         approvals,
@@ -1709,7 +1769,7 @@ async function endCall(silent = false) {
   ui.mute.classList.remove('on');
   ui.mute.textContent = 'كتم المايك';
   call.muted = false;
-  setTimeout(() => { renderTasks(); refreshIdle(true); }, 0);
+  setTimeout(() => { renderTasks(); refreshIdle(true); applyUpdateIfIdle(); }, 0);
   if (!silent) setStatus('انتهت المكالمة');
   else if (!ui.status.textContent.startsWith('أكمل')) setStatus('متوقف', 'err');
   renderUsage();
@@ -2055,7 +2115,7 @@ function showChatToggle() {
   $('chatToggle').classList.toggle('on', !on);
 }
 $('chatToggle').addEventListener('click', () => { store.set('chat', settings().chat === 'off' ? 'on' : 'off'); showChatToggle(); showComposer(); });
-$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); showTasksPanel(); showChatToggle(); dlg.showModal(); });
+$('settingsBtn').addEventListener('click', () => { fillSettings(); showBarge(); showTaskCheck(); showBoardFix(); showOpener(); showTasksPanel(); showChatToggle(); $('appVersion').textContent = 'إصدار التطبيق: ' + APP_VERSION; dlg.showModal(); });
 // الحفظ عند الضغط وعند أي تعديل — لا نعتمد على حدث close للنافذة لأنه لا يصل في بعض المتصفحات
 $('saveBtn').addEventListener('click', () => { saveSettings(); setStatus('حُفظت الإعدادات'); });
 for (const id of ['sKey', 'sToken', 'sRepo', 'sVoice']) $(id).addEventListener('change', saveSettings);
@@ -2106,9 +2166,31 @@ async function refreshIdle(force = false) {
   idleLoadAt = Date.now();
   try { await loadVault(); boardCache = { key: '', text: '' }; renderTasks(); } catch (e) { console.warn('idle load', e); }
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIdle(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { refreshIdle(); checkUpdate(); } });
+
+// ---------- التحديث التلقائي ----------
+// التطبيق المثبّت على الشاشة الرئيسية قد يبقى على نسخة قديمة أياماً: يقارن رقم الإصدار المنشور بالحالي،
+// ويعيد التحميل فقط وهو خامل (لا مكالمة، ولا رد يُكتب، ولا فعل ينتظر زر التأكيد).
+const APP_VERSION = (document.querySelector('script[src*="app.js?v="]')?.getAttribute('src') || '').split('v=')[1] || '';
+let updateReady = false, lastUpdateCheck = 0;
+async function checkUpdate() {
+  if (!APP_VERSION || Date.now() - lastUpdateCheck < 5 * 60000) return;
+  lastUpdateCheck = Date.now();
+  try {
+    const html = await (await fetch('index.html?u=' + Date.now(), { cache: 'no-store' })).text();
+    const v = (html.match(/app\.js\?v=([\w.-]+)/) || [])[1];
+    if (v && v !== APP_VERSION) { updateReady = true; applyUpdateIfIdle(); }
+  } catch {}
+}
+function applyUpdateIfIdle() {
+  if (!updateReady || call.active || chat.busy || chat.pending) return;
+  setStatus('أحدّث التطبيق لآخر نسخة…', 'busy');
+  setTimeout(() => location.reload(), 400);
+}
+setInterval(checkUpdate, 30 * 60000);
+setTimeout(checkUpdate, 3000);
 refreshIdle(true);
 showComposer();
 
 // للتجربة من الـ console فقط
-window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag, renderTasks, panel, indexNotes, vault, chat, chatSend, chatToday, callMemory, renderChatConfirm, systemInstruction };
+window.__nv = { verifyItem, boardSection, confirmAction, openLoopsForVoice, doneToday, addDoneToday, lock, lockNow, sealSecrets, openSecrets, aesFromPrf, persistAll, memory, searchVault, findNote, openLoopsText, loadVault, systemInstruction, runTool, connect, storage, idbGet, cacheGet, call, audio, pollNews, announceIfIdle, unheardAnswers, myTasks, checkTerms, checkTasksSaid, boardText, diag, renderTasks, panel, indexNotes, vault, chat, chatSend, chatToday, callMemory, renderChatConfirm, systemInstruction, dueInfo, lateLabel, projectOf, checkUpdate, applyUpdateIfIdle };

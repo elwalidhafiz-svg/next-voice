@@ -113,7 +113,9 @@
   .tasks ul { list-style: none; margin: 0; padding: 0; }
   .tasks li { padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.5; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
   .tasks li:last-child { border-bottom: 0; }
-  .tasks li .late { color: var(--warn); font-size: 12px; flex: none; }
+  .tasks li .late { color: var(--warn); font-size: 12px; flex: none; white-space: nowrap; }
+  .tasks li .main { flex: 1; min-width: 0; }
+  .tasks li .meta-sm { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .tasks li.said { color: var(--muted); }
   .tasks li.said::before { content: '✓'; color: var(--ok); flex: none; }
   .tasks .appr { font-size: 12px; color: var(--muted); padding: 8px 0 10px; }
@@ -248,6 +250,7 @@
     <label>تشخيص الصوت</label>
     <div class="lock-row"><button class="pill" type="button" id="diagExport">نسخ تشخيص آخر المكالمات</button></div>
     <div class="check" id="diagInfo">أرقام فقط (مستويات وعدادات، بلا نصوص)، تبقى على جهازك حتى تنسخها بنفسك.</div>
+    <div class="check" id="appVersion"></div>
     <label>قفل Face ID</label>
     <div class="lock-row"><button class="pill" type="button" id="lockToggle">تفعيل قفل Face ID</button></div>
     <div class="check" id="lockStatus"></div>
@@ -260,6 +263,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261024j"></script>
+<script type="module" src="app.js?v=20261025a"></script>
 </body>
 </html>
