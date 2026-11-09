@@ -13,6 +13,7 @@
   python3 next_voice_sync.py                 # فهرس + مزامنة + الطلبات
   python3 next_voice_sync.py --index-only    # فهرس فقط
   python3 next_voice_sync.py --index-only --out <ملف>
+  python3 next_voice_sync.py --test-alert    # تجربة تنبيه الأعطال (إشعار الماك + إيميل)
 """
 import json
 import os
@@ -30,6 +31,7 @@ CLAUDE_TIMEOUT = 15 * 60
 STUCK_MIN = 20          # طلب «working» أطول من هذا يُعاد (انقطع التشغيل أثناء تنفيذه)
 MAX_ATTEMPTS = 2        # بعدها يُعلَّم failed ويُبلَّغ
 SYNC_ALERT_AFTER = 3    # فشل مزامنة متتالٍ قبل تنبيه تيليجرام
+ALERT_AFTER = 2         # فشل متتالٍ لأي جزء قبل تنبيه الماك والإيميل
 STATE = Path.home() / ".local" / "share" / "next-voice" / "state.json"
 APPROVALS_REL = Path("_System") / "Pending Approvals.md"
 APPROVALS_EVERY_MIN = 120          # نسخة «ما ينتظر اعتمادك» كل ساعتين
@@ -152,7 +154,10 @@ def track_sync(ok, error=""):
                 return  # نحاول الإبلاغ في الدورة التالية
         state.update(failures=0, alerted=False)
         save_state(state)
+        incident("sync", True, "مزامنة الـ Vault مع GitHub")
         return
+    incident("sync", False, "مزامنة الـ Vault مع GitHub", error, after=SYNC_ALERT_AFTER)
+    state = load_state()
     state["failures"] = state.get("failures", 0) + 1
     if state["failures"] >= SYNC_ALERT_AFTER and not state.get("alerted"):
         try:
@@ -189,7 +194,10 @@ def watch_telegram_next():
                 return
         state.update(tg_down_since=None, tg_alerted=False)
         save_state(state)
+        incident("telegram", True, "نيكست تيليجرام")
         return
+    incident("telegram", False, "نيكست تيليجرام", "جلسة البوت لا تعمل على الماك. شغّل «تشغيل نيكست تيليجرام» من _System ← Telegram Assistant.", after=5)
+    state = load_state()
     since = state.get("tg_down_since") or now.isoformat()
     state["tg_down_since"] = since
     down_min = (now - datetime.fromisoformat(since)).total_seconds() / 60
@@ -280,6 +288,89 @@ def human_now():
 
 def log(*a):
     print(datetime.now().strftime("%H:%M:%S"), *a, flush=True)
+
+
+MAC_NOTIFY = 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv) sound name "Basso"\nend run'
+ALERT_KEYCHAIN = "next-voice-alert"   # Keychain: الحساب = إيميل Gmail، وكلمة السر = App Password (لا تُكتب في أي ملف)
+
+
+def email_self(subject, body):
+    """إيميل من Gmail الوليد إلى نفسه عبر SMTP. البيانات من Keychain، وكلمة السر تمر لـ curl عبر stdin فلا تظهر في قائمة العمليات."""
+    info = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", ALERT_KEYCHAIN],
+                          capture_output=True, text=True)
+    m = re.search(r'"acct"<blob>="([^"]+)"', info.stdout)
+    pw = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", ALERT_KEYCHAIN, "-w"],
+                        capture_output=True, text=True).stdout.strip()
+    if not m or not pw:
+        raise RuntimeError("إيميل التنبيه غير مضبوط في Keychain (" + ALERT_KEYCHAIN + ")")
+    addr = m.group(1)
+    from email.header import Header
+    from email.mime.text import MIMEText
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = str(Header(subject, "utf-8"))
+    msg["From"] = msg["To"] = addr
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".eml", delete=False, encoding="utf-8") as f:
+        f.write(msg.as_string())
+        eml = f.name
+    try:
+        cfg = 'user = "%s:%s"\n' % (addr, pw)
+        proc = subprocess.run(
+            ["/usr/bin/curl", "-sS", "--max-time", "60", "--ssl-reqd", "--url", "smtps://smtp.gmail.com:465",
+             "--mail-from", addr, "--mail-rcpt", addr, "--upload-file", eml, "-K", "-"],
+            input=cfg, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip()[:200])
+    finally:
+        os.unlink(eml)
+
+
+def notify(title, body):
+    """تنبيه أعطال نيكست: إشعار على الماك + إيميل للوليد من Gmail إلى نفسه. لا يرفع خطأ أبداً."""
+    try:
+        proc = subprocess.run(["/usr/bin/osascript", "-e", MAC_NOTIFY, title, body[:220]],
+                              capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            log("تعذّر إشعار الماك:", proc.stderr.strip()[:200])
+    except Exception as e:  # noqa: BLE001
+        log("تعذّر إشعار الماك:", e)
+    try:
+        email_self(title, body)
+    except Exception as e:  # noqa: BLE001
+        log("تعذّر الإيميل:", e)
+
+
+def fix_hint(error):
+    e = error.lower()
+    if "authenticate" in e or "oauth" in e or "login" in e:
+        return "الحل: افتح Terminal واكتب ~/.local/bin/claude ثم /login ثم /exit."
+    if "limit" in e or "quota" in e or "rate" in e:
+        return "يبدو أنك بلغت حد استخدام Claude؛ يعود وحده بعد انتهاء المدة."
+    return ""
+
+
+def incident(key, ok, label, error="", after=ALERT_AFTER, quiet_if=None):
+    """تنبيه واحد بعد `after` فشلاً متتالياً لجزء من نيكست، وتنبيه عند عودته. quiet_if: مفتاح عطل آخر إن كان مُبلَّغاً لا يُكرَّر التنبيه."""
+    state = load_state()
+    inc = state.setdefault("incidents", {})
+    cur = inc.get(key) or {"n": 0, "alerted": False}
+    if ok:
+        if cur.get("alerted") is True:  # «muted» = لم يُرسل عنه تنبيه، فلا رسالة عودة
+            notify(f"✅ نيكست: عاد {label} للعمل", f"{label} يعمل من جديد.")
+        inc[key] = {"n": 0, "alerted": False}
+    else:
+        cur["n"] = cur.get("n", 0) + 1
+        muted = bool(quiet_if) and inc.get(quiet_if, {}).get("alerted") is True
+        if cur["n"] >= after and not cur.get("alerted"):
+            if muted:
+                cur["alerted"] = "muted"
+            else:
+                notify(f"⚠️ نيكست: {label} متوقف",
+                       f"{label} فشل {cur['n']} مرات متتالية.\nالسبب: {error[:300]}\n{fix_hint(error)}".strip())
+                cur["alerted"] = True
+        inc[key] = cur
+    state["incidents"] = inc
+    save_state(state)
 
 
 def tg_send(text):
@@ -561,12 +652,14 @@ def snapshot_approvals(force=False):
     except Exception as e:  # noqa: BLE001 — يُعاد بعد APPROVALS_RETRY_MIN
         state = load_state(); state["approvals_failed"] = True; save_state(state)
         log("فشل تحديث «ما ينتظر اعتمادك»:", e)
+        incident("approvals", False, "تحديث «ما ينتظر اعتمادي»", str(e), quiet_if="board")
         return
     head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
             f"# ما ينتظر اعتمادي\n\nملف تلقائي يكتبه سكربت نيكست الصوتي كل ساعتين نهاراً من شيت المحتوى وشيت البحث عن فرص جديدة. لا تعدّله يدوياً.\n"
             f"آخر تحديث: {human_day(now.date(), now.date())} {human_time(now)}.\n\n")
     (VAULT / APPROVALS_REL).write_text(head + body.strip() + "\n", encoding="utf-8")
     state = load_state(); state["approvals_failed"] = False; save_state(state)
+    incident("approvals", True, "تحديث «ما ينتظر اعتمادي»")
     publish("voice: pending approvals snapshot")
     log("حُدّث «ما ينتظر اعتمادك».")
 
@@ -675,6 +768,7 @@ def today_board(force=False):
     except Exception as e:  # noqa: BLE001 — يُعاد بعد APPROVALS_RETRY_MIN
         state = load_state(); state["wa_failed"] = True; save_state(state)
         log("فشل لوحة اليوم:", e)
+        incident("board", False, "تحديث «لوحة اليوم»", str(e), quiet_if="approvals")
         return
     head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
             f"# لوحة اليوم\n\nملف تلقائي يجهّزه نيكست الكبير عند استيقاظ الماك وكل ساعتين نهاراً: [[Open Loops]] كاملة، وفوقها ما تغيّر في واتساب، و[[Pending Approvals]]، لنيكست الصوتي. لا تعدّله يدوياً؛ Open Loops يحدّثه تقرير المساء وما يؤكده الوليد.\n"
@@ -682,6 +776,7 @@ def today_board(force=False):
             f"في Open Loops {open_count} بنداً مفتوحاً، منها {daily_count} متابعة يومية مجمّعة باسم صاحبها؛ والبنود العادية في اللوحة {shown} من {regular}.\n\n")
     (VAULT / TODAY_REL).write_text(head + body.strip() + "\n", encoding="utf-8")
     state = load_state(); state.update(wa_failed=False, wa_ok_at=now.strftime("%Y-%m-%d %H:%M")); save_state(state)
+    incident("board", True, "تحديث «لوحة اليوم»")
     publish("voice: today board")
     log("حُدّثت لوحة اليوم.")
 
@@ -770,6 +865,9 @@ def rotate_log(max_bytes=2_000_000, keep_lines=3000):
 def main():
     rotate_log()
     args = sys.argv[1:]
+    if "--test-alert" in args:
+        notify("🔔 نيكست: تجربة التنبيه", "إن وصلك هذا الإشعار وهذا الإيميل فتنبيهات أعطال نيكست تعمل.")
+        return 0
     out = VAULT / INDEX_REL
     if "--out" in args:
         out = Path(args[args.index("--out") + 1])
@@ -793,8 +891,10 @@ def main():
     if status == 0:
         try:
             process_big_requests()
+            incident("big", True, "تنفيذ طلبات نيكست الكبير")
         except Exception as e:  # noqa: BLE001
             log("خطأ في طلبات نيكست الكبير:", e)
+            incident("big", False, "تنفيذ طلبات نيكست الكبير", str(e))
         try:
             archive_done_requests()
         except Exception as e:  # noqa: BLE001
