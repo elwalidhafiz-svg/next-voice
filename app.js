@@ -746,9 +746,12 @@ function dueInfo(x) {
   if (m[1] === 'اليوم') return { due: 'اليوم', days: 0 };
   const when = (m[2] || m[3] || '').trim();
   if (!when) return { due: '', days: null };
+  if (/^اليوم|^الليلة/.test(when)) return { due: when, days: 0 }; // «اليوم الساعة 5 م»: الرقم ساعة لا يوم
   if (/أمس/.test(when)) return { due: when.replace(/^أمس\s*/, 'أمس '), days: 1 };
   if (/^غداً|^غدا|^بكرة/.test(when)) return { due: when, days: -1 };
-  const d = when.match(/(\d{1,2})(?:\s+(\S+))?/);
+  // الساعة ليست يوماً: «الساعة 5 م»، «بعد 6 م»، «9:30 ص»
+  const dayPart = when.replace(/(?:الساعة\s*)?\d{1,2}(?::\d{2})?\s*[صم](?=$|[\s،.)])/g, ' ');
+  const d = dayPart.match(/(\d{1,2})(?:\s+(\S+))?/);
   if (!d) return { due: when, days: null };
   const { date } = riyadhNow();
   const [y, cm, cd] = date.split('-').map(Number);
