@@ -686,7 +686,7 @@ function panelList(items, opts = {}) {
     const ts = terms[i] || [];
     const hit = ts.filter((t) => said.includes(t)).length;
     if (ts.length && said.includes(ts[0]) && hit >= Math.min(2, ts.length)) li.classList.add('said');
-    li.addEventListener('click', () => askAbout(x, opts.kind));
+    li.addEventListener('click', () => askAbout(x, opts.kind, li));
     ul.append(li);
   });
   return ul;
@@ -735,7 +735,7 @@ function renderTasks() {
     if (props.length) body.append(panelList(props, { kind: 'proposal' })); else empty('لا مقترحات تنتظر قرارك.');
   }
   document.getElementById('tasksTitle').textContent = items.length ? `مهام اليوم (${items.length})` : 'لا مهام موعدها اليوم';
-  const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
+  const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : chatOn() ? 'اضغط بنداً لتختار: اتصال أو شات' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
   if (body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
   box.hidden = false;
 }
@@ -785,11 +785,25 @@ function projectOf(item) {
   const label = part && /^[^:]{2,25}:/.test(part) ? part.split(':')[0].trim() : '';
   return label && label !== proj ? `${proj} · ${label}` : proj;
 }
-function askAbout(item, kind) {
-  if (!call.session) { // خارج المكالمة: الضغط يبدأ المكالمة، ونيكست يفتتح بهذا البند
+function chatOn() { return settings().chat !== 'off' && !lock.locked; }
+function askAbout(item, kind, li) {
+  if (!call.session) { // خارج المكالمة: زرّان تحت البند — اتصال (نيكست يفتتح المكالمة بهذا البند) أو شات
     if (call.active) return; // المكالمة تتصل الآن
-    call.askOnStart = { item, kind };
-    startCall();
+    const startOn = () => { call.askOnStart = { item, kind }; startCall(); };
+    if (!li || !chatOn()) return startOn();
+    const open = li.querySelector('.choice');
+    document.querySelectorAll('.tasks .choice').forEach((c) => c.remove());
+    if (open) return; // ضغطة ثانية على البند نفسه تغلق الزرّين
+    const row = document.createElement('div');
+    row.className = 'choice';
+    const mk = (label, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'pill sm'; b.textContent = label;
+      b.addEventListener('click', (e) => { e.stopPropagation(); row.remove(); fn(); });
+      return b;
+    };
+    row.append(mk('📞 اتصال', startOn), mk('💬 شات', () => chatAbout(item, kind)));
+    (li.querySelector('.main') || li).append(row);
     return;
   }
   const what = kind === 'proposal'
@@ -797,6 +811,14 @@ function askAbout(item, kind) {
     : `«${item}». قل له ما تعرفه عنه بجملتين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.`;
   call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) الوليد ضغط على هذا البند في الشاشة: ${what}` });
   note('tool', `👆 سأل عن: ${clip(item, 60)}`);
+}
+// الشات عن بند: نفس طلب المكالمة، مكتوباً. يظهر للوليد سطر «👆 …» ويصل النموذج الطلب كاملاً.
+function chatAbout(item, kind) {
+  const what = kind === 'proposal'
+    ? `هذا مقترح ينتظر قراره: «${item}». اكتب له بسطر ما هو ومن أين ظهر، واسأله: يضيفه بموعد، أو متابعة يومية، أو يتجاهله — ونفّذ حسب رده بقاعدة «المرور على مقترحات».`
+    : `«${item}». اكتب له ما تعرفه عنه بسطرين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.`;
+  const keep = store.get('tasksOpen', 'off'); setTasksOpen(false); store.set('tasksOpen', keep); // تُطوى مؤقتاً ليظهر الرد، دون تغيير الحالة المحفوظة
+  chatSend(`(تنبيه من النظام) الوليد ضغط على هذا البند في شاشة المهام واختار الشات: ${what}`, { display: '👆 حدّثني عن: ' + item.split(' ← ')[0] });
 }
 let panelTimer = 0;
 function markSaid(text) { // ✓ يتحدّث بعد كل جملة لنيكست، بتأخير بسيط حتى لا يعيد الرسم مع كل كلمة
@@ -1884,15 +1906,16 @@ async function chatModel(ai) {
 function closeLike(args) {
   return /(أغلق|إغلاق|اغلاق|اقفل|أقفل|قفل|مُغلق|مغلق|خلص|انتهى|سلّم)/.test(`${args.title || ''} ${args.request || ''}`);
 }
-async function chatSend(text) {
+async function chatSend(text, opts = {}) {
+  const shown = opts.display || text; // ما يظهر للوليد ويُحفظ في محادثة اليوم؛ النموذج يصله text
   const s = settings();
   if (lock.locked) return;
   if (!s.key) { $('settings').showModal(); setStatus('أكمل الإعدادات أولاً', 'err'); return; }
   if (chat.busy) return;
   chat.busy = true;
   const history = chatToday().slice(-20).map((m) => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
-  note('user', text);
-  chatPush('user', text);
+  note('user', shown);
+  chatPush('user', shown);
   setStatus('نيكست يكتب…', 'busy');
   try {
     if (!vault.byPath.size) await loadVault();
