@@ -14,6 +14,7 @@
   python3 next_voice_sync.py --index-only    # فهرس فقط
   python3 next_voice_sync.py --index-only --out <ملف>
   python3 next_voice_sync.py --test-alert    # تجربة تنبيه الأعطال (إشعار الماك + إيميل)
+  python3 next_voice_sync.py --opps-board    # تحديث لوحة الفرص الآن (تجربة)
 """
 import json
 import os
@@ -21,7 +22,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 VAULT = Path.home() / "Documents" / "My Vault"
@@ -38,6 +39,11 @@ APPROVALS_EVERY_MIN = 120          # نسخة «ما ينتظر اعتمادك»
 APPROVALS_RETRY_MIN = 30           # بعد فشل
 APPROVALS_HOURS = range(8, 23)     # من 8 ص حتى 11 م بتوقيت الرياض
 JOBS_SHEET = "15Jihl4OMeHZNz8HqaZy50teiKXFLaVZyqu098bGHDvU"
+OPPS_REL = Path("_System") / "Opportunities Board.md"
+OPPS_SLOTS = ((7, 30), (19, 50), (22, 30))  # لوحة الفرص: بعد الالتقاط 6:56، قبل التواصل 8:50 م، وبعده
+OPPS_RETRY_MIN = 30                # بعد فشل، داخل الموعد نفسه
+OPPS_MAX_TRIES = 2                 # محاولتان لكل موعد على الأكثر (حصة Claude)
+OPPS_WEEK1 = date(2026, 10, 3)     # بداية الأسبوع 1 من 13
 TODAY_REL = Path("_System") / "Today Board.md"
 WA_EVERY_MIN = 120                 # لوحة اليوم كل ساعتين نهاراً (APPROVALS_HOURS)
 WAKE_GAP_MIN = 60                  # فجوة أطول من هذا بين تشغيلين = الماك كان نائماً ← لوحة فورية
@@ -456,11 +462,12 @@ def run_claude(rel, body, requested_at, kind="سؤال"):
 - نفّذ طلب «فعل» مباشرة دون سؤال؛ الوليد أكّده بصوته في المكالمة (قاعدة «تأكيد الفهم» في soul.md لا تنطبق هنا). مسموح دون تأكيد في طلب «فعل»: القراءة والتحليل، وإضافة مهام Microsoft To Do عبر Zapier، وإضافة بنود في `_System/Open Loops.md`، وتعديل ملفات الـ Vault بقواعدها.
 - مهام Microsoft To Do تُضاف إلى القائمة الافتراضية «Tasks» دائماً، إلا إن ذكر الوليد في طلبه قائمة بالاسم. اذكر اسم القائمة في ردك.
 - استثناء وحيد في الشيتات: إن كان الطلب اعتماد فكرة محتوى، فغيّر «حالة النشر» لذلك الصف في تبويب «نظام إدارة البراندينج» من `فكرة جديدة - بانتظار الموافقة` إلى `معتمدة` فقط (تحقق أن الصف بهذه الحالة فعلاً). لا تغيّر أي حالة أخرى أبداً، ولا تضع `معتمد للنشر`، ولا تعتمد مسودة أو تصميماً أو إيميلاً؛ هذه تُعتمد في جلساتها.
+- استثناء ثانٍ في الشيتات: طلب «فعل» عنوانه «تسجيل تقديم OPP-…» (من زر «قدّمت» في لوحة الفرص، أكّده الوليد بضغطتين): في شيت البحث عن فرص جديدة {JOBS_SHEET}، تبويب «الفرص»، ابحث عن المعرّف في العمود A، واكتب في خلية العمود U («تقديم مباشر») لذلك الصف فقط النص المذكور في الطلب («قدّمت بنفسي <التاريخ>») دون سؤال. خلية واحدة فقط: لا تغيّر أي عمود آخر، ولا K ولا S. إن لم تجد المعرّف، أو وجدته أكثر من مرة، أو كانت U غير فارغة، فلا تكتب شيئاً واذكر ذلك في ردك. اللوحة تتحدث في أقرب موعد لها.
 - **إيميلات التواصل** (مسودات في `_System/Outreach Drafts/`، والشكل والحالات في `_شكل الملف.md` هناك):
   - «اعتمد إيميل …»: حدّد الملف بالاسم أو الشركة (إن لم يتضح أو وُجد أكثر من ملف فلا تعتمد، واذكر ذلك في ردك). تحقق أن حالته `بانتظار الموافقة`، ثم اكتب `status: معتمد بالصوت` و`approved_at: <التاريخ والوقت>`. لا ترسل شيئاً ولا تغيّر الشيت؛ مهمة التواصل ترسله في تشغيلها التالي.
   - «عدّل إيميل …: <التعديل>»: عدّل النص في الملف نفسه بقواعد الكتابة في `Projects/نظام البحث عن فرص جديدة.md` (أسلوبه، ≤ 150 كلمة، بلا شرطة طويلة، التوقيع كما هو)، وأضف سطراً مؤرخاً في «## التعديلات». الحالة تبقى `بانتظار الموافقة`. ضع النص الجديد كاملاً في ردك ليُقرأ عليه.
   - «ألغِ إيميل …»: `status: مُلغى`.
-- ممنوع دون تأكيد: إرسال أي رسالة أو إيميل، وتعديل أي شيت، وأي تغيير خارجي آخر. اذكره في آخر ردك تحت «يحتاج تأكيدك:» ولا تنفّذه.
+- ممنوع دون تأكيد: إرسال أي رسالة أو إيميل، وتعديل أي شيت (عدا الاستثناءين أعلاه في طلب «فعل»)، وأي تغيير خارجي آخر. اذكره في آخر ردك تحت «يحتاج تأكيدك:» ولا تنفّذه.
 - لا تعدّل ملف الطلب نفسه؛ السكربت يكتب فيه ردك.
 - ردك النهائي جزءان:
   1. الرد كما سيصل إليه، ويقول ما فعلتَه بجملة بشرية («✅ أضفتُ مهمة «…» إلى قائمة Tasks»): ممنوع فيه المعرّفات والإيميلات والحسابات وأسماء الملفات والمسارات. **بالعربية الفصحى دائماً** (المصطلحات التقنية فقط بالإنجليزية)، مختصرة، نقاط، أقل من 2500 حرف، بلا عناوين Markdown ولا جداول، وبلا تمهيد مثل «رسالة تيليجرام:»، وكل تاريخ أو وقت فيها بصيغة بشرية كما في soul.md («أمس الجمعة الساعة 5 م»، «بكرة الأحد»)، لا 2026-10-17 ولا 15:10.
@@ -662,6 +669,144 @@ def snapshot_approvals(force=False):
     incident("approvals", True, "تحديث «ما ينتظر اعتمادي»")
     publish("voice: pending approvals snapshot")
     log("حُدّث «ما ينتظر اعتمادك».")
+
+
+def opps_slot(now):
+    """آخر موعد للوحة الفرص حلّ قبل `now` (اليوم أو أمس)، كمفتاح نصي."""
+    for day in (now.date(), now.date() - timedelta(days=1)):
+        for h, m in reversed(OPPS_SLOTS):
+            t = datetime(day.year, day.month, day.day, h, m, tzinfo=RIYADH)
+            if t <= now:
+                return t.strftime("%Y-%m-%d %H:%M")
+    return None
+
+
+OPPS_LINE = re.compile(r"^-\s*(OPP-\d+)\s*\|(.+)\|\s*(\d+(?:\.\d+)?)\s*\|\s*(https?://\S+)\s*$")
+
+
+def normalize_opps_line(line):
+    """سطر إعلان بالشكل «- OPP-123 | الشركة | المسمى | الدرجة | رابط»، أو None.
+    يكفي أن يبدأ بمعرّف OPP وينتهي برابط قبله رقم؛ إن احتوى الاسم أو المسمى على | فما بينها يُدمج:
+    الجزء الأخير هو المسمى، وما قبله يُدمج في الشركة بـ « - »."""
+    m = OPPS_LINE.match(line.strip())
+    if not m:
+        return None
+    oid, middle, score, url = m.groups()
+    parts = [x.strip() for x in middle.split("|") if x.strip()]
+    if len(parts) < 2:
+        return None
+    return f"- {oid} | {' - '.join(parts[:-1])} | {parts[-1]} | {score} | {url}"
+
+
+def clean_opps_body(body):
+    """يتحقق من الأقسام الإلزامية، ويُسقط أي سطر في «قدّم على الإعلانات» لا يطابق الشكل الحرفي الذي يقرؤه التطبيق."""
+    body = body.strip()
+    if "## عليك الآن" not in body or "## قدّم على الإعلانات" not in body:
+        raise RuntimeError("شكل غير متوقع: " + body[:200])
+    body = body[body.index("## عليك الآن"):]
+    out, in_apply, kept, dropped = [], False, 0, []
+    for line in body.splitlines():
+        if line.startswith("## "):
+            if in_apply and kept == 0:
+                out.append("- لا شيء")
+            in_apply, kept = line[3:].strip().startswith("قدّم"), 0
+            out.append(line)
+            continue
+        if in_apply and line.startswith("- "):
+            fixed = normalize_opps_line(line)
+            if fixed:
+                out.append(fixed); kept += 1
+            elif line.strip() != "- لا شيء":
+                dropped.append(line.strip()[:200])
+            continue
+        out.append(line)
+    if in_apply and kept == 0:
+        out.append("- لا شيء")
+    if dropped:
+        log(f"لوحة الفرص: أُسقط {len(dropped)} سطر إعلان بشكل غير صالح:", *dropped)
+    return "\n".join(out).strip()
+
+
+def opps_board(force=False):
+    """لوحة الفرص (_System/Opportunities Board.md) ثلاث مرات يومياً من شيت البحث عن فرص جديدة. قراءة فقط من الشيت.
+    تُشغَّل عند أول دورة بعد كل موعد في OPPS_SLOTS إن لم تُشغَّل له، أو بـ --opps-board. فشلها لا يمس غيرها."""
+    try:
+        now = datetime.now(RIYADH)
+        state = load_state()
+        slot = opps_slot(now)
+        if not force:
+            if not slot or state.get("opps_last_slot") == slot:
+                return
+            tries = state.get("opps_tries", {})
+            if tries.get("slot") == slot:
+                if tries.get("n", 0) >= OPPS_MAX_TRIES:
+                    return
+                last = state.get("opps_attempt")
+                if last and (now - datetime.fromisoformat(last)).total_seconds() < OPPS_RETRY_MIN * 60:
+                    return
+            else:
+                tries = {"slot": slot, "n": 0}
+            tries["n"] = tries.get("n", 0) + 1
+            state["opps_tries"] = tries
+        state["opps_attempt"] = now.isoformat()
+        save_state(state)
+
+        today = now.date()
+        week = min(max((today - OPPS_WEEK1).days // 7 + 1, 1), 13)
+        since = (today - timedelta(days=30)).isoformat()
+        prompt = f"""اقرأ شيت البحث عن فرص جديدة {JOBS_SHEET} بأداة Google Sheets. **قراءة فقط: لا تكتب في أي شيت ولا ملف.**
+اليوم {today.isoformat()} بتوقيت الرياض. «آخر 30 يوماً» = من {since} حتى اليوم.
+
+احسب ما يلي من البيانات كما هي، ولا تخمّن شيئاً لا يظهر في الشيت (حالة المهام المجدولة نفسها لا تُعرف من الشيت؛ لا تكتب عنها):
+
+1. **عليك الآن:**
+   - سطر واحد: عدد «بانتظار الموافقة» في تبويب «جهات الاتصال» (عمود L) وفي تبويب «الفرص» (عمود M)، مثل: «- 15 رسالة تنتظر اعتمادك (14 جهة اتصال، 1 فرصة)». إن كان صفراً فلا تكتب السطر.
+   - سطر واحد: عدد الإعلانات المفتوحة التي لم تُسجَّل عليها تقديماً (عدد صفوف القسم 2 قبل قصّها إلى 10). إن كان صفراً فلا تكتب السطر.
+   - سطر لكل جهة في «جهات الاتصال» حالتها (L) «ردّ» تنتظر جواباً: «- ردّ <الاسم> من <الشركة> — يحتاج جوابك».
+   - إن لم يبقَ شيء فاكتب «- لا شيء».
+2. **قدّم على الإعلانات:** صفوف تبويب «الفرص» التي تحقق كل الشروط: F = «إعلان وظيفة»، وM إحدى: مُقيَّم، مُخصَّص، بانتظار الموافقة، أُرسل، متابعة؛ وK (الدرجة) ≥ قيمة الخلية 'الإعدادات'!B4؛ وE رابط يبدأ بـ http؛ وU («تقديم مباشر») فارغ؛ وB (التاريخ) من {since} فما بعد. رتّبها بالدرجة تنازلياً وخذ أول 10. كل سطر بهذا الشكل حرفياً (الفاصل مسافة ثم | ثم مسافة، والدرجة رقم فقط، والرابط كما في E كاملاً). إن احتوى اسم الشركة أو المسمى على | فاستبدله بـ -:
+   - OPP-123 | الشركة | المسمى | الدرجة | https://رابط-الإعلان
+3. **ما يحدث:**
+   - عدد الفرص المسجّلة اليوم (B = {today.isoformat()}) موزّعة على قنواتها.
+   - عدد الرسائل المرسلة اليوم (عمود M في «جهات الاتصال» = {today.isoformat()}).
+   - عدد الشركات التي «توظف الآن»: في تبويب «الشركات» عمود G سطر «توظف الآن (<تاريخ>)» تاريخه من {since} فما بعد، وكم منها بلا جهة فردية في «جهات الاتصال» لها إيميل صالح.
+   - آخر تاريخ إضافة في «جهات الاتصال» (أحدث قيمة في J).
+4. **النتائج:**
+   - لكل فئة في «جهات الاتصال» (عمود E)، مع فصل «إيميل التوظيف العام» و«إيميل الشركة العام» حسب عمود D: «- <الفئة>: أُرسل <ن> · ردّ <ن> · مقابلة <ن>».
+   - «- تقديم مباشر: <عدد صفوف «الفرص» التي U فيها غير فارغ>»
+   - «- الأسبوع {week} من 13»
+
+أخرج Markdown فقط، بلا مقدمة ولا خاتمة ولا أسوار كود، بهذه العناوين حرفياً وبهذا الترتيب، وكل سطر تحتها يبدأ بـ «- » (القسم الفارغ يكتب تحته «- لا شيء»):
+## عليك الآن
+## قدّم على الإعلانات
+## ما يحدث
+## النتائج
+
+بالعربية (أسماء الشركات والمسميات كما في الشيت)، بلا إيميلات ولا أرقام هواتف. الروابط فقط في قسم «قدّم على الإعلانات». التواريخ بصيغة بشرية («اليوم»، «أمس الثلاثاء»، «السبت 7 نوفمبر»)."""
+        body = clean_opps_body(claude_print(prompt))
+    except Exception as e:  # noqa: BLE001 — يُعاد بعد OPPS_RETRY_MIN داخل الموعد نفسه
+        try:
+            state = load_state(); state["opps_failed"] = True; save_state(state)
+            log("فشل تحديث لوحة الفرص:", e)
+            incident("opps", False, "تحديث «لوحة الفرص»", str(e), quiet_if="approvals")
+        except Exception as e2:  # noqa: BLE001
+            log("خطأ في تسجيل فشل لوحة الفرص:", e2)
+        return
+    try:
+        head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
+                f"# لوحة الفرص\n\nملف تلقائي من شيت البحث عن فرص جديدة، يكتبه سكربت نيكست الصوتي ثلاث مرات يومياً ويعرضه تبويب «الفرص». لا تعدّله يدوياً.\n"
+                f"آخر تحديث: {human_day(now.date(), now.date())} {human_time(now)}.\n\n")
+        (VAULT / OPPS_REL).write_text(head + body + "\n", encoding="utf-8")
+        state = load_state()
+        state["opps_failed"] = False
+        if slot:
+            state["opps_last_slot"] = slot
+        save_state(state)
+        incident("opps", True, "تحديث «لوحة الفرص»")
+        publish("voice: opportunities board")
+        log("حُدّثت لوحة الفرص.")
+    except Exception as e:  # noqa: BLE001
+        log("خطأ في كتابة لوحة الفرص:", e)
 
 
 def open_loop_items():
@@ -875,6 +1020,11 @@ def main():
     print(f"الفهرس: {count} ملاحظة{' (محدّث)' if changed else ''} → {out}")
     if "--index-only" in args:
         return 0
+    if "--opps-board" in args:  # تجربة: مزامنة ثم لوحة الفرص فقط
+        status = sync()
+        if status == 0:
+            opps_board(force=True)
+        return status
     # استيقاظ الماك: فجوة طويلة منذ آخر تشغيل (launchd لا يعمل والماك نائم)
     state = load_state()
     prev = state.get("last_run")
@@ -903,6 +1053,7 @@ def main():
             snapshot_approvals(force=woke)
         except Exception as e:  # noqa: BLE001
             log("خطأ في «ما ينتظر اعتمادك»:", e)
+        opps_board()  # معزولة داخلياً: فشلها لا يمس ما قبلها ولا ما بعدها
         try:
             today_board(force=woke)
         except Exception as e:  # noqa: BLE001
