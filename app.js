@@ -727,6 +727,28 @@ function oppsCount() { // ما يحتاج فعلاً منه: القسم الأو
   b.sections.forEach((sec, i) => { if (oppsIsApply(sec)) n += oppsApplyItems(sec).length; else if (i === 0) n += oppsReal(sec.lines).length; });
   return n;
 }
+// روابط السير الذاتية على Drive: _System/CV Links.md، أسطره «- الاسم | كلمات مفتاحية بفواصل | الرابط».
+// السطر الأول الذي تطابق إحدى كلماته المسمى هو النسخة المقترحة؛ الكلمة * = الافتراضية. الملفات خاصة بحساب الوليد.
+const CV_FILE = '_System/CV Links.md';
+function cvLinks() {
+  const n = vault.byPath.get(CV_FILE);
+  if (!n) return [];
+  return n.text.split('\n').filter((l) => l.startsWith('- ')).map((l) => {
+    const p = l.slice(2).split(' | ').map((x) => x.trim());
+    const url = p[p.length - 1] || '';
+    if (p.length < 3 || !/^https:\/\//.test(url)) return null;
+    return { name: p[0], keys: p[1].split(/[،,]/).map((k) => k.trim().toLowerCase()).filter(Boolean), url };
+  }).filter(Boolean);
+}
+function cvFor(role, list) {
+  const r = (role || '').toLowerCase();
+  return list.find((c) => c.keys.some((k) => k !== '*' && r.includes(k))) || list.find((c) => c.keys.includes('*')) || null;
+}
+function cvLink(c, label) {
+  const a = document.createElement('a');
+  a.className = 'pill sm'; a.href = c.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = label;
+  return a;
+}
 async function oppsMarkApplied(x, btn) {
   if (btn.dataset.step !== 'confirm') { // الضغطة الأولى تطلب التأكيد، وتعود لحالها بعد 5 ثوانٍ
     btn.dataset.step = 'confirm'; btn.textContent = 'تأكيد: قدّمت؟'; btn.classList.add('on');
@@ -758,6 +780,7 @@ function renderOpps(body, empty) {
     const ul = document.createElement('ul');
     if (oppsIsApply(sec)) {
       const items = oppsApplyItems(sec);
+      const cvs = cvLinks();
       for (const x of items) {
         const li = document.createElement('li');
         li.className = 'plain';
@@ -773,8 +796,25 @@ function renderOpps(body, empty) {
         const btn = document.createElement('button');
         btn.type = 'button'; btn.className = 'pill sm'; btn.textContent = 'قدّمت';
         btn.addEventListener('click', (ev) => { ev.preventDefault(); oppsMarkApplied(x, btn); });
+        const cv = cvFor(x.role, cvs);
+        let others = null;
+        if (cv) {
+          row.append(cvLink(cv, 'السيرة'));
+          meta.textContent += ` · السيرة المقترحة: ${cv.name}`;
+          const rest = cvs.filter((c) => c !== cv);
+          if (rest.length) {
+            others = document.createElement('div');
+            others.className = 'choice'; others.hidden = true;
+            for (const c of rest) others.append(cvLink(c, c.name));
+            const more = document.createElement('button');
+            more.type = 'button'; more.className = 'pill sm'; more.textContent = 'نسخة أخرى';
+            more.addEventListener('click', (ev) => { ev.preventDefault(); others.hidden = !others.hidden; });
+            row.append(more);
+          }
+        }
         row.append(btn);
         main.append(meta, row);
+        if (others) main.append(others);
         li.append(main);
         ul.append(li);
       }
