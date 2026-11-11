@@ -118,6 +118,9 @@
   .tasks li .meta-sm { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .tasks .choice { display: flex; gap: 8px; margin-top: 8px; }
   .tasks .choice .pill.sm { padding: 6px 14px; font-size: 13px; }
+  .tasks li.plain { cursor: default; }
+  .tasks a.pill { text-decoration: none; display: inline-block; }
+  .tasks .choice .pill:disabled { opacity: .6; }
   .tasks li.said { color: var(--muted); }
   .tasks li.said::before { content: '✓'; color: var(--ok); flex: none; }
   .tasks .appr { font-size: 12px; color: var(--muted); padding: 8px 0 10px; }
@@ -265,6 +268,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261110a"></script>
+<script type="module" src="app.js?v=20261111a"></script>
 </body>
 </html>

@@ -691,6 +691,101 @@ function panelList(items, opts = {}) {
   });
   return ul;
 }
+// ---------- لوحة الفرص (تبويب «الفرص») ----------
+// _System/Opportunities Board.md ملف تلقائي من شيت البحث عن فرص جديدة (يكتبه سكربت الماك). العرض قراءة فقط؛
+// الفعل الوحيد زر «قدّمت»: بضغطتين (طلب ثم تأكيد) يُرسل طلب «فعل» لنيكست الكبير ليسجّل التقديم في الشيت.
+// شكل الملف: أقسام «## عنوان» تحتها أسطر «- …». قسم «قدّم على الإعلانات» أسطره:
+//   - OPP-123 | الشركة | المسمى | الدرجة | https://رابط-الإعلان
+const OPPS_FILE = '_System/Opportunities Board.md';
+const OPPS_SHEET = '15Jihl4OMeHZNz8HqaZy50teiKXFLaVZyqu098bGHDvU';
+function oppsBoard() {
+  const n = vault.byPath.get(OPPS_FILE);
+  if (!n) return null;
+  const out = { updated: (n.text.match(/^آخر تحديث:\s*(.+)$/m) || [])[1] || '', sections: [] };
+  let cur = null;
+  for (const line of n.text.split('\n')) {
+    const h = line.match(/^##\s+(.+)$/);
+    if (h) { cur = { title: h[1].trim(), lines: [] }; out.sections.push(cur); continue; }
+    if (cur && line.startsWith('- ')) cur.lines.push(line.slice(2).trim());
+  }
+  return out;
+}
+function oppsApplied() { try { return JSON.parse(store.get('opps.applied') || '{}'); } catch { return {}; } }
+const oppsIsApply = (sec) => sec.title.startsWith('قدّم');
+const oppsReal = (lines) => lines.filter((l) => l && l !== 'لا شيء');
+function oppsApplyItems(sec) {
+  const done = oppsApplied();
+  return oppsReal(sec.lines).map((l) => {
+    const [id = '', company = '', role = '', score = '', url = ''] = l.split(' | ').map((x) => x.trim());
+    return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '' };
+  }).filter((x) => x.id && !done[x.id]);
+}
+function oppsCount() { // ما يحتاج فعلاً منه: القسم الأول («عليك الآن») + إعلانات لم يقدّم عليها
+  const b = oppsBoard();
+  if (!b) return 0;
+  let n = 0;
+  b.sections.forEach((sec, i) => { if (oppsIsApply(sec)) n += oppsApplyItems(sec).length; else if (i === 0) n += oppsReal(sec.lines).length; });
+  return n;
+}
+async function oppsMarkApplied(x, btn) {
+  if (btn.dataset.step !== 'confirm') { // الضغطة الأولى تطلب التأكيد، وتعود لحالها بعد 5 ثوانٍ
+    btn.dataset.step = 'confirm'; btn.textContent = 'تأكيد: قدّمت؟'; btn.classList.add('on');
+    setTimeout(() => { if (btn.isConnected && btn.dataset.step === 'confirm') { btn.dataset.step = ''; btn.textContent = 'قدّمت'; btn.classList.remove('on'); } }, 5000);
+    return;
+  }
+  btn.dataset.step = 'sending'; btn.disabled = true; btn.textContent = 'يُسجَّل…';
+  const { date } = riyadhNow();
+  try {
+    await addToInbox({
+      title: `تسجيل تقديم ${x.id} ${x.company}`.slice(0, 60),
+      content: `سجّل في شيت البحث عن فرص جديدة (${OPPS_SHEET})، تبويب «الفرص»: الوليد قدّم بنفسه على ${x.id} (${x.company} — ${x.role}) يوم ${date}.\nاكتب في العمود U «تقديم مباشر» لصف هذا المعرّف: «قدّمت بنفسي ${date}». لا تغيّر أي عمود آخر، ولا تكتب في K ولا S.\nإن لم تجد المعرّف في العمود A فلا تكتب شيئاً وأبلغه.`,
+      kind: BIG_KIND, type: 'فعل',
+    });
+    const done = oppsApplied(); done[x.id] = date; store.set('opps.applied', JSON.stringify(done));
+    renderTasks();
+  } catch (e) {
+    btn.dataset.step = ''; btn.disabled = false; btn.classList.remove('on'); btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
+function renderOpps(body, empty) {
+  const b = oppsBoard();
+  if (!b) { empty('لوحة الفرص لم تُجهَّز بعد (ملف «Opportunities Board» غير موجود في الـ Vault).'); return; }
+  if (b.updated) empty('آخر تحديث: ' + b.updated);
+  for (const sec of b.sections) {
+    const h = document.createElement('div');
+    h.className = 'grp';
+    h.textContent = sec.title;
+    const ul = document.createElement('ul');
+    if (oppsIsApply(sec)) {
+      const items = oppsApplyItems(sec);
+      for (const x of items) {
+        const li = document.createElement('li');
+        li.className = 'plain';
+        const main = document.createElement('div');
+        main.className = 'main';
+        main.append(document.createTextNode(`${x.company} — ${x.role}`));
+        const meta = document.createElement('div');
+        meta.className = 'meta-sm';
+        meta.textContent = [x.id, x.score && `الدرجة ${x.score}`].filter(Boolean).join(' · ');
+        const row = document.createElement('div');
+        row.className = 'choice';
+        if (x.url) { const a = document.createElement('a'); a.className = 'pill sm'; a.href = x.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = 'افتح الإعلان'; row.append(a); }
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'pill sm'; btn.textContent = 'قدّمت';
+        btn.addEventListener('click', (ev) => { ev.preventDefault(); oppsMarkApplied(x, btn); });
+        row.append(btn);
+        main.append(meta, row);
+        li.append(main);
+        ul.append(li);
+      }
+      if (!items.length) { const li = document.createElement('li'); li.className = 'plain'; li.textContent = 'لا إعلانات تنتظر تقديمك.'; ul.append(li); }
+    } else {
+      const lines = sec.lines.length ? sec.lines : ['لا شيء'];
+      for (const l of lines) { const li = document.createElement('li'); li.className = 'plain'; li.textContent = l; ul.append(li); }
+    }
+    body.append(h, ul);
+  }
+}
 function renderTasks() {
   const box = document.getElementById('tasksPanel');
   if (!box) return;
@@ -704,7 +799,7 @@ function renderTasks() {
   body.replaceChildren();
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
-  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length]]) {
+  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['opps', 'الفرص', oppsCount()]]) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tab' + (key === tab ? ' on' : '');
@@ -731,12 +826,14 @@ function renderTasks() {
     if (appr.length) empty('ينتظر اعتمادك: ' + appr.join(' · '));
   } else if (tab === 'week') {
     if (week.length) body.append(panelList(week, { kind: 'week' })); else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
+  } else if (tab === 'opps') {
+    try { renderOpps(body, empty); } catch (e) { empty('تعذّر عرض لوحة الفرص: ' + (e?.message || e)); }
   } else {
     if (props.length) body.append(panelList(props, { kind: 'proposal' })); else empty('لا مقترحات تنتظر قرارك.');
   }
   document.getElementById('tasksTitle').textContent = items.length ? `مهام اليوم (${items.length})` : 'لا مهام موعدها اليوم';
   const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : chatOn() ? 'اضغط بنداً لتختار: اتصال أو شات' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
-  if (body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
+  if (tab !== 'opps' && body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
   box.hidden = false;
 }
 // «— متأخر منذ الأربعاء 21 أكتوبر» / «منذ أمس السبت» / «منذ الأحد 18» ← { due, days }
