@@ -907,10 +907,50 @@ function renderDrafts(body) {
   }
   body.append(h, bulkRow, ul);
 }
+// ---------- تحديث لوحة الفرص يدوياً ----------
+// الزر يكتب طلباً عنوانه يبدأ بـ OPPS_REFRESH_TITLE؛ سكربت الماك يتعرف عليه بالعنوان ويشغّل opps_board(force=True) مباشرة
+// (قراءة من الشيت وكتابة ملف اللوحة فقط). كل ضغطة = تشغيلة Claude على الماك، لذلك مهلة 15 دقيقة بين الطلبات.
+const OPPS_REFRESH_TITLE = 'تحديث لوحة الفرص الآن';
+const OPPS_REFRESH_GAP = 15 * 60000;
+function oppsRefreshState() {
+  const waiting = vault.notes.some((n) => n.path.startsWith('Inbox/') && n.path.includes(OPPS_REFRESH_TITLE) && /^status: (pending|working)$/m.test(n.text));
+  if (waiting) return 'يتحدّث الآن… (دقائق)';
+  const last = Number(store.get('opps.refreshAt') || 0);
+  const left = OPPS_REFRESH_GAP - (Date.now() - last);
+  return left > 0 ? `طُلب التحديث · متاح بعد ${Math.ceil(left / 60000)} د` : '';
+}
+async function oppsRefresh(btn) {
+  if (oppsRefreshState()) { renderTasks(); return; }
+  btn.disabled = true; btn.textContent = 'يُطلب…';
+  try {
+    await addToInbox({
+      title: OPPS_REFRESH_TITLE,
+      content: 'الوليد ضغط زر «حدّث» في تبويب الفرص: أعد كتابة لوحة الفرص (_System/Opportunities Board.md) الآن بنفس تحديثها المجدول.\nهذا الطلب ينفّذه سكربت الماك نفسه (opps_board) بالتعرف على العنوان. إن وصلك نصاً يا نيكست الكبير فمعناه أن السكربت لم يُحدَّث بعد: لا تكتب اللوحة بنفسك ولا تغيّر شيئاً، وأجب بسطر أن التحديث اليدوي غير مفعّل على الماك بعد.',
+      kind: BIG_KIND, type: 'فعل',
+    });
+    store.set('opps.refreshAt', String(Date.now()));
+    renderTasks();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
+function oppsRefreshRow(body) {
+  const row = document.createElement('div');
+  row.className = 'choice';
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'pill sm';
+  const st = oppsRefreshState();
+  btn.textContent = st || 'حدّث اللوحة';
+  btn.disabled = !!st;
+  btn.addEventListener('click', (ev) => { ev.preventDefault(); oppsRefresh(btn); });
+  row.append(btn);
+  body.append(row);
+}
 function renderOpps(body, empty) {
   const b = oppsBoard();
   if (!b) { empty('لوحة الفرص لم تُجهَّز بعد (ملف «Opportunities Board» غير موجود في الـ Vault).'); try { renderDrafts(body); } catch (e) { /* العرض اختياري */ } return; }
   if (b.updated) empty('آخر تحديث: ' + b.updated);
+  try { oppsRefreshRow(body); } catch (e) { /* الزر اختياري */ }
   try { renderDrafts(body); } catch (e) { empty('تعذّر عرض الرسائل: ' + (e?.message || e)); }
   for (const sec of b.sections) {
     const h = document.createElement('div');
