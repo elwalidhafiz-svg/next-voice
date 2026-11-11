@@ -658,6 +658,59 @@ function checkTerms(items) {
 // ---------- المهام على الشاشة (مفتاح «المهام على الشاشة») ----------
 // عرض فقط: نفس قائمة my_tasks مجمّعة، ✓ على ما ذكره نيكست في المكالمة، والضغط على بند يطلب من نيكست الحديث عنه
 // (قراءة لا فعل — أي إغلاق يمر بالتأكيد الصوتي كالعادة).
+// ---------- زر «أغلق» على كل بند (اليوم، الأسبوع، مقترحات) ----------
+// بضغطتين (طلب ثم تأكيد) يُرسل طلب «فعل» لنيكست الكبير: البند ينتقل إلى «مُغلق» في Open Loops، والمقترح يُغلق بسبب
+// «تجاهله الوليد». البند يختفي من القوائم فوراً (done.today) ولا يُلمس Open Loops من التطبيق.
+// عمر المقترح: من تاريخ ظهوره في قسم «مقترحات» في Open Loops (سطر اللوحة لا يحمله)؛ بلا ربط واضح لا تُعرض علامة.
+const PROPOSAL_OLD_DAYS = 10;
+function proposalAge(item) {
+  if (/\((جديد|موعد صريح)/.test(item)) return null; // لم يُكتب في Open Loops بعد: لا تاريخ ظهور له
+  const n = vault.byPath.get(OPEN_LOOPS);
+  if (!n) return null;
+  const i = n.text.indexOf('\n## مقترحات');
+  if (i === -1) return null;
+  const j = n.text.indexOf('\n## ', i + 5);
+  const lines = n.text.slice(i, j === -1 ? undefined : j).split('\n').filter((l) => /^- \d{4}-\d{2}-\d{2}/.test(l));
+  const r = rankLines(lines, item, lines);
+  if (!r.length || (r[1] && r[1].s >= r[0].s * 0.83)) return null;
+  const top = norm(r[0].l);
+  if (itemTerms(item.split(' ← ')[0]).filter((t) => top.includes(t)).length < 2) return null; // كلمة واحدة مشتركة لا تكفي للربط
+  const days = Math.round((Date.parse(riyadhNow().date) - Date.parse(r[0].l.slice(2, 12))) / 864e5);
+  return Number.isFinite(days) && days >= 0 ? days : null;
+}
+function closeRequest(x, kind) {
+  const short = x.replace(/^عليك:\s*/, '').split(' ← ')[0];
+  if (kind === 'proposal') {
+    return {
+      title: `تجاهل مقترح: ${short}`,
+      content: `في _System/Open Loops.md، قسم «مقترحات»: المقترح «${x}» ← انقله إلى «مُغلق» بتاريخ اليوم وبسبب «تجاهله الوليد (زر الإغلاق في التطبيق)».\nإن لم تجده في «مقترحات» (التقطته اللوحة ولم يُكتب بعد): اكتب له سطراً في «مُغلق» بالسبب نفسه حتى لا يُقترح مجدداً، ولا تغيّر غيره.\nإن طابق أكثر من مقترح ولم يتضح المقصود فلا تغيّر شيئاً وأبلغه.`,
+    };
+  }
+  const m = x.match(/^متابعة ([^:]+):\s*(.*)$/);
+  const part = m ? m[2].replace(/ — متأخر.*$/, '').trim() : '';
+  return {
+    part,
+    title: `إغلاق: ${part || short}`,
+    content: `أغلق في _System/Open Loops.md البند: ${x}\n${part ? `الجزء المقصود تحديداً: «${part}» (من متابعة ${m[1]})\n` : ''}(انقله إلى «مُغلق» بتاريخ اليوم وسطر قصير بالسبب: ضغط الوليد زر «أغلق» في التطبيق وأكّده.)\nوإن كان البند سطر خطة أو متابعة يضم عدة أجزاء: أغلق الجزء المقصود وحده (احذفه من السطر واذكره في «مُغلق»)، وأبقِ باقي السطر مفتوحاً كما هو.\nإن لم تجد البند أو طابق أكثر من بند ولم يتضح المقصود فلا تغيّر شيئاً وأبلغه.`,
+  };
+}
+async function closeItem(x, kind, btn) {
+  if (btn.dataset.step !== 'confirm') {
+    btn.dataset.step = 'confirm'; btn.textContent = 'تأكيد؟'; btn.classList.add('on');
+    setTimeout(() => { if (btn.isConnected && btn.dataset.step === 'confirm') { btn.dataset.step = ''; btn.textContent = 'أغلق'; btn.classList.remove('on'); } }, 5000);
+    return;
+  }
+  btn.dataset.step = 'sending'; btn.disabled = true; btn.textContent = '…';
+  const req = closeRequest(x, kind);
+  try {
+    await addToInbox({ title: req.title.slice(0, 60), content: req.content, kind: BIG_KIND, type: 'فعل' });
+    addDoneToday(x);
+    if (req.part) addDoneToday(req.part);
+    renderTasks();
+  } catch (e) {
+    btn.dataset.step = ''; btn.disabled = false; btn.classList.remove('on'); btn.textContent = 'تعذّر';
+  }
+}
 const panel = { said: '', terms: [], items: [], tab: '' };
 function panelList(items, opts = {}) {
   const said = norm(panel.said);
@@ -686,6 +739,15 @@ function panelList(items, opts = {}) {
     const ts = terms[i] || [];
     const hit = ts.filter((t) => said.includes(t)).length;
     if (ts.length && said.includes(ts[0]) && hit >= Math.min(2, ts.length)) li.classList.add('said');
+    if (opts.kind === 'proposal') {
+      let age = null;
+      try { age = proposalAge(x); } catch { /* العلامة اختيارية */ }
+      if (age != null && age >= PROPOSAL_OLD_DAYS) { const s = document.createElement('span'); s.className = 'late'; s.textContent = `قديم · ${age} يوماً`; li.append(s); }
+    }
+    const xb = document.createElement('button');
+    xb.type = 'button'; xb.className = 'pill sm xbtn'; xb.textContent = 'أغلق';
+    xb.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); closeItem(x, opts.kind, xb); });
+    li.append(xb);
     li.addEventListener('click', () => askAbout(x, opts.kind, li));
     ul.append(li);
   });

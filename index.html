@@ -119,6 +119,8 @@
   .tasks .choice { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   .tasks .choice .pill.sm { padding: 6px 14px; font-size: 13px; }
   .tasks li.plain { cursor: default; }
+  .tasks li .xbtn { flex: none; padding: 3px 10px; font-size: 12px; align-self: flex-start; }
+  .tasks li .xbtn:disabled { opacity: .6; }
   .tasks .draft-subj { font-weight: 700; font-size: 14px; margin-top: 10px; }
   .tasks .draft { white-space: pre-wrap; word-wrap: break-word; font-size: 14px; line-height: 1.7; background: #08080c; border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin: 6px 0; }
   .tasks .draft-edit { flex: 1; min-width: 60%; background: var(--card); border: 1px solid var(--line); color: var(--fg); border-radius: 10px; padding: 8px 10px; font: 14px "IBM Plex Sans Arabic", sans-serif; }
@@ -271,6 +273,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261111e"></script>
+<script type="module" src="app.js?v=20261111f"></script>
 </body>
 </html>
