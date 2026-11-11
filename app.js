@@ -800,6 +800,44 @@ function outreachDrafts() {
     return { path: n.path, meta, subject, text, why };
   }).filter(Boolean).sort((a, b) => (a.path < b.path ? 1 : -1));
 }
+function draftRequest(d, act, note = '') {
+  const who = `${d.meta.name || ''} — ${d.meta.company || ''} (${d.meta.contact || ''})`;
+  const file = `الملف: \`${d.path}\``;
+  return {
+    approve: { title: `اعتمد إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `اعتمد إيميل ${who}.\n${file}\nاعتمده الوليد من تبويب «الفرص» في التطبيق بضغطتين، بعد أن عُرض عليه النص كاملاً على الشاشة (الموضوع: «${d.subject}»، طول النص ${d.text.length} حرفاً).\nتحقق أن الملف بهذا المسار وحالته «بانتظار الموافقة» وأن موضوعه هو المذكور هنا، ثم اكتب status: معتمد بالصوت و approved_at كما في قاعدة «اعتمد إيميل». إن اختلف الموضوع أو الحالة فلا تعتمد واذكر ذلك.\nلا ترسل شيئاً ولا تغيّر الشيت؛ مهمة التواصل ترسله في تشغيلها التالي.` },
+    cancel: { title: `ألغِ إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `ألغِ إيميل ${who}.\n${file}\nألغاه الوليد من تبويب «الفرص» في التطبيق بضغطتين. اكتب status: مُلغى في هذا الملف فقط. لا ترسل شيئاً ولا تغيّر الشيت.` },
+    edit: { title: `عدّل إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `عدّل إيميل ${who}: ${note.trim()}\n${file}\nطلبه الوليد كتابةً من تبويب «الفرص» في التطبيق. عدّل النص في هذا الملف بقاعدة «عدّل إيميل»، والحالة تبقى «بانتظار الموافقة» ليراجعه من جديد.` },
+  }[act];
+}
+// «اعتمد ما فتحته»: اعتماد دفعة واحدة لما عُرض نصه على الشاشة فقط (قرار الوليد 2026-11-11؛ القاعدة: لا اعتماد لرسالة لم تُفتح).
+const draftsOpened = new Set();
+async function draftsApproveOpened(btn) {
+  const todo = outreachDrafts().filter((d) => draftsOpened.has(d.path));
+  if (!todo.length) return;
+  if (btn.dataset.step !== 'confirm') {
+    btn.dataset.step = 'confirm'; btn.textContent = `تأكيد اعتماد ${todo.length}؟`; btn.classList.add('on');
+    setTimeout(() => { if (btn.isConnected && btn.dataset.step === 'confirm') { btn.dataset.step = ''; btn.classList.remove('on'); draftsBulkLabel(btn); } }, 5000);
+    return;
+  }
+  btn.dataset.step = 'sending'; btn.disabled = true;
+  let ok = 0;
+  for (const d of todo) {
+    btn.textContent = `يُرسل ${ok + 1} من ${todo.length}…`;
+    try {
+      const req = draftRequest(d, 'approve');
+      await addToInbox({ title: req.title.slice(0, 60), content: req.content + '\n(ضمن اعتماد دفعة واحدة لما فتحه وقرأه.)', kind: BIG_KIND, type: 'فعل' });
+      const o = draftsActed(); o[d.path] = Date.now(); store.set('drafts.acted', JSON.stringify(o));
+      draftsOpened.delete(d.path);
+      ok++;
+    } catch (e) { break; }
+  }
+  renderTasks(); // ما تعذّر إرساله يبقى في القائمة وفي عدّاد الزر
+}
+function draftsBulkLabel(btn) {
+  const n = outreachDrafts().filter((d) => draftsOpened.has(d.path)).length;
+  btn.textContent = n ? `اعتمد ما فتحته (${n})` : 'اعتمد ما فتحته';
+  btn.disabled = !n;
+}
 async function draftAct(d, act, btn, note = '') {
   const labels = { approve: 'اعتمد', cancel: 'ألغِ', edit: 'أرسل التعديل' };
   if (act !== 'edit' && btn.dataset.step !== 'confirm') { // ضغطتان للاعتماد والإلغاء
@@ -809,13 +847,7 @@ async function draftAct(d, act, btn, note = '') {
   }
   if (act === 'edit' && !note.trim()) return;
   btn.dataset.step = 'sending'; btn.disabled = true; btn.textContent = 'يُرسل…';
-  const who = `${d.meta.name || ''} — ${d.meta.company || ''} (${d.meta.contact || ''})`;
-  const file = `الملف: \`${d.path}\``;
-  const req = {
-    approve: { title: `اعتمد إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `اعتمد إيميل ${who}.\n${file}\nاعتمده الوليد من تبويب «الفرص» في التطبيق بضغطتين، بعد أن عُرض عليه النص كاملاً على الشاشة (الموضوع: «${d.subject}»، طول النص ${d.text.length} حرفاً).\nتحقق أن الملف بهذا المسار وحالته «بانتظار الموافقة» وأن موضوعه هو المذكور هنا، ثم اكتب status: معتمد بالصوت و approved_at كما في قاعدة «اعتمد إيميل». إن اختلف الموضوع أو الحالة فلا تعتمد واذكر ذلك.\nلا ترسل شيئاً ولا تغيّر الشيت؛ مهمة التواصل ترسله في تشغيلها التالي.` },
-    cancel: { title: `ألغِ إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `ألغِ إيميل ${who}.\n${file}\nألغاه الوليد من تبويب «الفرص» في التطبيق بضغطتين. اكتب status: مُلغى في هذا الملف فقط. لا ترسل شيئاً ولا تغيّر الشيت.` },
-    edit: { title: `عدّل إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `عدّل إيميل ${who}: ${note.trim()}\n${file}\nطلبه الوليد كتابةً من تبويب «الفرص» في التطبيق. عدّل النص في هذا الملف بقاعدة «عدّل إيميل»، والحالة تبقى «بانتظار الموافقة» ليراجعه من جديد.` },
-  }[act];
+  const req = draftRequest(d, act, note);
   try {
     await addToInbox({ title: req.title.slice(0, 60), content: req.content, kind: BIG_KIND, type: 'فعل' });
     if (act !== 'edit') { const o = draftsActed(); o[d.path] = Date.now(); store.set('drafts.acted', JSON.stringify(o)); renderTasks(); }
@@ -830,6 +862,13 @@ function renderDrafts(body) {
   const h = document.createElement('div');
   h.className = 'grp';
   h.textContent = `رسائل تنتظر اعتمادك (${list.length}) — اضغط رسالة لتقرأها`;
+  const bulkRow = document.createElement('div');
+  bulkRow.className = 'choice';
+  const bulk = document.createElement('button');
+  bulk.type = 'button'; bulk.className = 'pill sm';
+  bulk.addEventListener('click', (ev) => { ev.preventDefault(); draftsApproveOpened(bulk); });
+  draftsBulkLabel(bulk);
+  bulkRow.append(bulk);
   const ul = document.createElement('ul');
   for (const d of list) {
     const li = document.createElement('li');
@@ -860,12 +899,13 @@ function renderDrafts(body) {
     editRow.append(input, mk('أرسل التعديل', (b) => draftAct(d, 'edit', b, input.value)));
     row.append(mk('اعتمد', (b) => draftAct(d, 'approve', b)), mk('عدّل', () => { editRow.hidden = !editRow.hidden; }), mk('ألغِ', (b) => draftAct(d, 'cancel', b)));
     box.append(subj, txt, why, row, editRow);
-    head.addEventListener('click', () => { box.hidden = !box.hidden; });
+    head.addEventListener('click', () => { box.hidden = !box.hidden; if (!box.hidden) { draftsOpened.add(d.path); head.textContent = '✓ ' + head.textContent.replace(/^✓ /, ''); if (bulk.dataset.step !== 'sending') { bulk.dataset.step = ''; bulk.classList.remove('on'); draftsBulkLabel(bulk); } } });
+    if (draftsOpened.has(d.path)) head.textContent = '✓ ' + head.textContent;
     main.append(head, meta, box);
     li.append(main);
     ul.append(li);
   }
-  body.append(h, ul);
+  body.append(h, bulkRow, ul);
 }
 function renderOpps(body, empty) {
   const b = oppsBoard();
