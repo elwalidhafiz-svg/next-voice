@@ -119,6 +119,9 @@
   .tasks .choice { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   .tasks .choice .pill.sm { padding: 6px 14px; font-size: 13px; }
   .tasks li.plain { cursor: default; }
+  .tasks .draft-subj { font-weight: 700; font-size: 14px; margin-top: 10px; }
+  .tasks .draft { white-space: pre-wrap; word-wrap: break-word; font-size: 14px; line-height: 1.7; background: #08080c; border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin: 6px 0; }
+  .tasks .draft-edit { flex: 1; min-width: 60%; background: var(--card); border: 1px solid var(--line); color: var(--fg); border-radius: 10px; padding: 8px 10px; font: 14px "IBM Plex Sans Arabic", sans-serif; }
   .tasks a.pill { text-decoration: none; display: inline-block; }
   .tasks .choice .pill:disabled { opacity: .6; }
   .tasks li.said { color: var(--muted); }
@@ -196,7 +199,7 @@
   </div>
 
   <section class="tasks" id="tasksPanel" hidden>
-    <button class="head" type="button" id="tasksHead" aria-expanded="false" aria-controls="tasksBody"><span id="tasksTitle">مهام اليوم</span><span class="hint-sm"><span id="tasksHint">اضغط للفتح</span> <span class="chev">▾</span></span></button>
+    <button class="head" type="button" id="tasksHead" aria-expanded="false" aria-controls="tasksBody"><span id="tasksTitle">لوحتي</span><span class="hint-sm"><span id="tasksHint">اضغط للفتح</span> <span class="chev">▾</span></span></button>
     <div id="tasksBody"></div>
   </section>
 
@@ -268,6 +271,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261111b"></script>
+<script type="module" src="app.js?v=20261111c"></script>
 </body>
 </html>

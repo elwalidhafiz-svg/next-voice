@@ -720,11 +720,11 @@ function oppsApplyItems(sec) {
     return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '' };
   }).filter((x) => x.id && !done[x.id]);
 }
-function oppsCount() { // ما يحتاج فعلاً منه: القسم الأول («عليك الآن») + إعلانات لم يقدّم عليها
-  const b = oppsBoard();
-  if (!b) return 0;
+function oppsCount() { // ما يحتاج فعلاً منه في هذا التبويب: رسائل تنتظر اعتماده + إعلانات لم يقدّم عليها
   let n = 0;
-  b.sections.forEach((sec, i) => { if (oppsIsApply(sec)) n += oppsApplyItems(sec).length; else if (i === 0) n += oppsReal(sec.lines).length; });
+  try { n += outreachDrafts().length; } catch { /* لا مسودات */ }
+  const b = oppsBoard();
+  if (b) b.sections.forEach((sec) => { if (oppsIsApply(sec)) n += oppsApplyItems(sec).length; });
   return n;
 }
 // روابط السير الذاتية على Drive: _System/CV Links.md، أسطره «- الاسم | كلمات مفتاحية بفواصل | الرابط».
@@ -769,10 +769,109 @@ async function oppsMarkApplied(x, btn) {
     btn.dataset.step = ''; btn.disabled = false; btn.classList.remove('on'); btn.textContent = 'تعذّر — أعد المحاولة';
   }
 }
+// ---------- اعتماد إيميلات التواصل من التطبيق ----------
+// مسودات «مهمة التواصل» ملفات في _System/Outreach Drafts/ (الشكل في «_شكل الملف.md» هناك). التطبيق يعرض ما حالته
+// «بانتظار الموافقة» بنصه كاملاً، والأفعال الثلاثة (اعتمد / عدّل / ألغِ) طلبات «فعل» لنيكست الكبير بمسار الملف نفسه.
+// لا يُرسل شيء من هنا: نيكست الكبير يغيّر حالة الملف فقط، ومهمة التواصل وحدها ترسل في تشغيلها التالي.
+const DRAFTS_DIR = '_System/Outreach Drafts/';
+function draftParse(text) {
+  const m = text.match(/^---\n([\s\S]*?)\n---\n?/);
+  const meta = {};
+  if (!m) return { meta, body: text };
+  for (const l of m[1].split('\n')) { const i = l.indexOf(':'); if (i > 0) meta[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
+  return { meta, body: text.slice(m[0].length) };
+}
+function draftsActed() { // ما ضغط عليه يختفي فوراً، وحتى 24 ساعة إن تأخر الماك في تنفيذ الطلب
+  let o = {};
+  try { o = JSON.parse(store.get('drafts.acted') || '{}'); } catch { o = {}; }
+  const now = Date.now();
+  for (const k of Object.keys(o)) if (now - o[k] > 24 * 3600 * 1000) delete o[k];
+  return o;
+}
+function outreachDrafts() {
+  const acted = draftsActed();
+  return (vault.notes || []).filter((n) => n.path.startsWith(DRAFTS_DIR) && !acted[n.path]).map((n) => {
+    const { meta, body } = draftParse(n.text);
+    if (meta.kind !== 'outreach-draft' || meta.status !== 'بانتظار الموافقة') return null;
+    const subject = (body.match(/^\*\*الموضوع:\*\*\s*(.+)$/m) || [])[1] || '';
+    const parts = body.split(/\n## /);
+    const text = parts[0].replace(/^# .*\n/, '').replace(/^\*\*الموضوع:\*\*.*\n?/m, '').trim();
+    const why = (parts.find((x) => x.startsWith('لماذا هو')) || '').replace(/^لماذا هو\s*/, '').trim();
+    return { path: n.path, meta, subject, text, why };
+  }).filter(Boolean).sort((a, b) => (a.path < b.path ? 1 : -1));
+}
+async function draftAct(d, act, btn, note = '') {
+  const labels = { approve: 'اعتمد', cancel: 'ألغِ', edit: 'أرسل التعديل' };
+  if (act !== 'edit' && btn.dataset.step !== 'confirm') { // ضغطتان للاعتماد والإلغاء
+    btn.dataset.step = 'confirm'; btn.textContent = act === 'approve' ? 'تأكيد الاعتماد؟' : 'تأكيد الإلغاء؟'; btn.classList.add('on');
+    setTimeout(() => { if (btn.isConnected && btn.dataset.step === 'confirm') { btn.dataset.step = ''; btn.textContent = labels[act]; btn.classList.remove('on'); } }, 5000);
+    return;
+  }
+  if (act === 'edit' && !note.trim()) return;
+  btn.dataset.step = 'sending'; btn.disabled = true; btn.textContent = 'يُرسل…';
+  const who = `${d.meta.name || ''} — ${d.meta.company || ''} (${d.meta.contact || ''})`;
+  const file = `الملف: \`${d.path}\``;
+  const req = {
+    approve: { title: `اعتمد إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `اعتمد إيميل ${who}.\n${file}\nاعتمده الوليد من تبويب «الفرص» في التطبيق بضغطتين، بعد أن عُرض عليه النص كاملاً على الشاشة (الموضوع: «${d.subject}»، طول النص ${d.text.length} حرفاً).\nتحقق أن الملف بهذا المسار وحالته «بانتظار الموافقة» وأن موضوعه هو المذكور هنا، ثم اكتب status: معتمد بالصوت و approved_at كما في قاعدة «اعتمد إيميل». إن اختلف الموضوع أو الحالة فلا تعتمد واذكر ذلك.\nلا ترسل شيئاً ولا تغيّر الشيت؛ مهمة التواصل ترسله في تشغيلها التالي.` },
+    cancel: { title: `ألغِ إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `ألغِ إيميل ${who}.\n${file}\nألغاه الوليد من تبويب «الفرص» في التطبيق بضغطتين. اكتب status: مُلغى في هذا الملف فقط. لا ترسل شيئاً ولا تغيّر الشيت.` },
+    edit: { title: `عدّل إيميل ${d.meta.contact || ''} ${d.meta.name || ''}`, content: `عدّل إيميل ${who}: ${note.trim()}\n${file}\nطلبه الوليد كتابةً من تبويب «الفرص» في التطبيق. عدّل النص في هذا الملف بقاعدة «عدّل إيميل»، والحالة تبقى «بانتظار الموافقة» ليراجعه من جديد.` },
+  }[act];
+  try {
+    await addToInbox({ title: req.title.slice(0, 60), content: req.content, kind: BIG_KIND, type: 'فعل' });
+    if (act !== 'edit') { const o = draftsActed(); o[d.path] = Date.now(); store.set('drafts.acted', JSON.stringify(o)); renderTasks(); }
+    else { btn.textContent = 'أُرسل التعديل — يعود للمراجعة بعد دقائق'; }
+  } catch (e) {
+    btn.dataset.step = ''; btn.disabled = false; btn.classList.remove('on'); btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
+function renderDrafts(body) {
+  const list = outreachDrafts();
+  if (!list.length) return;
+  const h = document.createElement('div');
+  h.className = 'grp';
+  h.textContent = `رسائل تنتظر اعتمادك (${list.length}) — اضغط رسالة لتقرأها`;
+  const ul = document.createElement('ul');
+  for (const d of list) {
+    const li = document.createElement('li');
+    li.className = 'plain';
+    const main = document.createElement('div');
+    main.className = 'main';
+    const head = document.createElement('div');
+    head.style.cursor = 'pointer';
+    head.textContent = `${d.meta.name || ''} — ${d.meta.company || ''}`;
+    const meta = document.createElement('div');
+    meta.className = 'meta-sm';
+    meta.textContent = [d.meta.title, d.meta.type, d.meta.email_status, d.meta.cv && d.meta.cv !== 'بلا مرفق' ? 'مرفق: ' + d.meta.cv.replace(/^ElWalid_Hafiz_CV_|\.pdf$/g, '').replace(/_/g, ' ') : 'بلا مرفق'].filter(Boolean).join(' · ');
+    const box = document.createElement('div');
+    box.hidden = true;
+    const subj = document.createElement('div');
+    subj.className = 'draft-subj'; subj.dir = 'auto'; subj.textContent = d.subject;
+    const txt = document.createElement('div');
+    txt.className = 'draft'; txt.dir = 'auto'; txt.textContent = d.text;
+    const why = document.createElement('div');
+    why.className = 'meta-sm'; why.textContent = d.why ? 'لماذا هو: ' + d.why : '';
+    const row = document.createElement('div');
+    row.className = 'choice';
+    const mk = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'pill sm'; b.textContent = label; b.addEventListener('click', (ev) => { ev.preventDefault(); fn(b); }); return b; };
+    const editRow = document.createElement('div');
+    editRow.className = 'choice'; editRow.hidden = true;
+    const input = document.createElement('input');
+    input.className = 'draft-edit'; input.placeholder = 'اكتب التعديل المطلوب…'; input.dir = 'auto';
+    editRow.append(input, mk('أرسل التعديل', (b) => draftAct(d, 'edit', b, input.value)));
+    row.append(mk('اعتمد', (b) => draftAct(d, 'approve', b)), mk('عدّل', () => { editRow.hidden = !editRow.hidden; }), mk('ألغِ', (b) => draftAct(d, 'cancel', b)));
+    box.append(subj, txt, why, row, editRow);
+    head.addEventListener('click', () => { box.hidden = !box.hidden; });
+    main.append(head, meta, box);
+    li.append(main);
+    ul.append(li);
+  }
+  body.append(h, ul);
+}
 function renderOpps(body, empty) {
   const b = oppsBoard();
-  if (!b) { empty('لوحة الفرص لم تُجهَّز بعد (ملف «Opportunities Board» غير موجود في الـ Vault).'); return; }
+  if (!b) { empty('لوحة الفرص لم تُجهَّز بعد (ملف «Opportunities Board» غير موجود في الـ Vault).'); try { renderDrafts(body); } catch (e) { /* العرض اختياري */ } return; }
   if (b.updated) empty('آخر تحديث: ' + b.updated);
+  try { renderDrafts(body); } catch (e) { empty('تعذّر عرض الرسائل: ' + (e?.message || e)); }
   for (const sec of b.sections) {
     const h = document.createElement('div');
     h.className = 'grp';
@@ -871,7 +970,8 @@ function renderTasks() {
   } else {
     if (props.length) body.append(panelList(props, { kind: 'proposal' })); else empty('لا مقترحات تنتظر قرارك.');
   }
-  document.getElementById('tasksTitle').textContent = items.length ? `مهام اليوم (${items.length})` : 'لا مهام موعدها اليوم';
+  const oppsN = oppsCount();
+  document.getElementById('tasksTitle').textContent = ['لوحتي', `اليوم ${items.length}`, oppsN ? `الفرص ${oppsN}` : ''].filter(Boolean).join(' · ');
   const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : chatOn() ? 'اضغط بنداً لتختار: اتصال أو شات' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
   if (tab !== 'opps' && body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
   box.hidden = false;
