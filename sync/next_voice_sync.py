@@ -729,27 +729,29 @@ def clean_opps_body(body):
 
 def opps_board(force=False):
     """لوحة الفرص (_System/Opportunities Board.md) ثلاث مرات يومياً من شيت البحث عن فرص جديدة. قراءة فقط من الشيت.
-    تُشغَّل عند أول دورة بعد كل موعد في OPPS_SLOTS إن لم تُشغَّل له، أو بـ --opps-board. فشلها لا يمس غيرها."""
+    تُشغَّل عند أول دورة بعد كل موعد في OPPS_SLOTS إن لم تُشغَّل له، أو يدوياً (force: --opps-board أو زر «حدّث اللوحة»).
+    التشغيل اليدوي لا يمس مفاتيح المواعيد (opps_last_slot، opps_tries، opps_attempt)، فلا يُلغي تحديثاً مجدولاً.
+    تعيد True عند النجاح، ونص السبب عند الفشل، وNone إن لم يحن موعد. فشلها لا يمس غيرها."""
     try:
         now = datetime.now(RIYADH)
         state = load_state()
         slot = opps_slot(now)
         if not force:
             if not slot or state.get("opps_last_slot") == slot:
-                return
+                return None
             tries = state.get("opps_tries", {})
             if tries.get("slot") == slot:
                 if tries.get("n", 0) >= OPPS_MAX_TRIES:
-                    return
+                    return None
                 last = state.get("opps_attempt")
                 if last and (now - datetime.fromisoformat(last)).total_seconds() < OPPS_RETRY_MIN * 60:
-                    return
+                    return None
             else:
                 tries = {"slot": slot, "n": 0}
             tries["n"] = tries.get("n", 0) + 1
             state["opps_tries"] = tries
-        state["opps_attempt"] = now.isoformat()
-        save_state(state)
+            state["opps_attempt"] = now.isoformat()
+            save_state(state)
 
         today = now.date()
         week = min(max((today - OPPS_WEEK1).days // 7 + 1, 1), 13)
@@ -791,7 +793,7 @@ def opps_board(force=False):
             incident("opps", False, "تحديث «لوحة الفرص»", str(e), quiet_if="approvals")
         except Exception as e2:  # noqa: BLE001
             log("خطأ في تسجيل فشل لوحة الفرص:", e2)
-        return
+        return str(e)[:300] or "خطأ غير معروف"
     try:
         head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
                 f"# لوحة الفرص\n\nملف تلقائي من شيت البحث عن فرص جديدة، يكتبه سكربت نيكست الصوتي ثلاث مرات يومياً ويعرضه تبويب «الفرص». لا تعدّله يدوياً.\n"
@@ -799,14 +801,17 @@ def opps_board(force=False):
         (VAULT / OPPS_REL).write_text(head + body + "\n", encoding="utf-8")
         state = load_state()
         state["opps_failed"] = False
-        if slot:
+        state["opps_success"] = now.isoformat()
+        if slot and not force:
             state["opps_last_slot"] = slot
         save_state(state)
         incident("opps", True, "تحديث «لوحة الفرص»")
         publish("voice: opportunities board")
         log("حُدّثت لوحة الفرص.")
+        return True
     except Exception as e:  # noqa: BLE001
         log("خطأ في كتابة لوحة الفرص:", e)
+        return f"تعذّرت كتابة الملف: {str(e)[:250]}"
 
 
 def open_loop_items():
@@ -951,7 +956,7 @@ def recover_stuck():
 
 
 ARCHIVE_AFTER_H = 24
-DONE_STATUSES = ("answered", "failed", "cancelled")
+DONE_STATUSES = ("answered", "failed", "cancelled", "done")
 
 
 def archive_done_requests():
@@ -982,10 +987,64 @@ def archive_done_requests():
         log("نُقل إلى Inbox/_processed:", moved)
 
 
+OPPS_REFRESH_TITLE = "تحديث لوحة الفرص الآن"  # الثابت نفسه في app.js (زر «حدّث اللوحة»)
+OPPS_REFRESH_MIN_GAP = 10                      # دقائق: أقرب من هذا لآخر تحديث ناجح = لا تشغيل لـ Claude
+OPPS_FRESH_REPLY = "اللوحة محدّثة قبل دقائق"
+
+
+def finish_refresh(path, reply, failed=False):
+    """يغلق طلب «تحديث لوحة الفرص الآن» بسطر واحد. لا إشعار تيليجرام إلا عند الفشل (notified: no)."""
+    fields = {"status": "failed", "notified": "no"} if failed else {"status": "done"}
+    set_fields(path, answered=datetime.now().strftime("%Y-%m-%d %H:%M"), **fields)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"\n## {'فشل التنفيذ' if failed else 'ردّ نيكست الكبير'}\n{reply}\n")
+
+
+def run_opps_refreshes(requests):
+    """طلبات زر «حدّث اللوحة»: لا تمرّ بـ claude -p كطلب عادي؛ تشغّل opps_board(force=True) مرة واحدة على الأكثر.
+    الحماية: آخر تحديث ناجح قبل أقل من OPPS_REFRESH_MIN_GAP دقيقة = لا تشغيل. الطلبات الزائدة تُغلق بالرد نفسه."""
+    if not requests:
+        return
+    last = load_state().get("opps_success")
+    fresh = bool(last) and (datetime.now(RIYADH) - datetime.fromisoformat(last)).total_seconds() < OPPS_REFRESH_MIN_GAP * 60
+    first, rest = requests[0], requests[1:]
+    dup_reply = OPPS_FRESH_REPLY
+    if fresh:
+        rest = requests
+        log("لوحة الفرص محدّثة قبل دقائق — لا تشغيل:", len(rest))
+    else:
+        path = first[0]
+        set_fields(path, status="working", working_since=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   attempts=int(first[1].get("attempts") or 0) + 1)
+        publish("voice: refreshing opportunities board")
+        log("تحديث يدوي للوحة الفرص:", path.name)
+        try:
+            result = opps_board(force=True)
+        except Exception as e:  # noqa: BLE001 — opps_board معزولة أصلاً؛ احتياط
+            result = str(e)[:300]
+        if result is True:
+            finish_refresh(path, f"حُدّثت لوحة الفرص {human_time(datetime.now(RIYADH))}")
+        else:
+            reason = f"لم تُحدَّث لوحة الفرص: {result or 'خطأ غير معروف'}"
+            finish_refresh(path, reason, failed=True)
+            dup_reply = reason + " (طلب مكرر؛ أُبلغت بالفشل مرة واحدة)"
+    for path, _, _ in rest:
+        finish_refresh(path, dup_reply)
+    publish("voice: opportunities board refresh done")
+
+
 def process_big_requests():
     recover_stuck()
     acted = False
-    for path, meta, body in big_requests("pending"):
+    pending = big_requests("pending")
+    refresh = [r for r in pending if OPPS_REFRESH_TITLE in r[0].name]
+    try:
+        run_opps_refreshes(refresh)  # ليست «فعلاً» يستدعي snapshot_approvals
+    except Exception as e:  # noqa: BLE001
+        log("خطأ في طلبات تحديث لوحة الفرص:", e)
+    for path, meta, body in pending:
+        if OPPS_REFRESH_TITLE in path.name:
+            continue
         item = execute(path, meta, body)
         acted = acted or is_action(item)
         log("فعل — سيُبلَّغ:" if is_action(item) else "سؤال — يُسمع في المكالمة التالية:", path.name)
