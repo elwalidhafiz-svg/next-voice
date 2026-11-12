@@ -1182,6 +1182,164 @@ function renderOpps(body, empty) {
     foldSection(body, sec.title, oppsReal(sec.lines));
   }
 }
+// ---------- تبويب «البراند»: أفكار المحتوى (اعتمد / ارفض / عدّل) ----------
+// المصدر: قسم «أفكار محتوى جديدة» في _System/Pending Approvals.md (يكتبه سكربت الماك كل ساعتين). شكل السطر:
+//   - صف <ن>: <الفكرة بجملة قصيرة> — <السلسلة> · <المنصة> | <أول 60 حرفاً من نص الفكرة الأصلي في الشيت>
+// الشيت بلا معرّف ثابت للصف، فالقرار يحمل رقم الصف وأول الفكرة، ونيكست الكبير لا يكتب إلا إن تطابقا مع حالة «بانتظار الموافقة».
+// سطر بلا « | أولها» (سكربت الماك لم يُحدَّث بعد) يُعرض للقراءة فقط. القرارات تُجمع على الشاشة ثم تُرسل في طلب «فعل» واحد:
+// اعتمد ← `معتمدة`، ارفض ← `مرفوضة`، عدّل ← إعادة صياغة الفكرة في مكانها مع ملاحظة، وتبقى بانتظار الموافقة.
+const APPROVALS_FILE = '_System/Pending Approvals.md';
+const BRAND_SHEET = '1L--CVxVw1GzTHjMQypOhK80-v0NrKYwoVJOw2xhKses';
+const BRAND_REFRESH_TITLE = 'تحديث ما ينتظر اعتمادي الآن';
+const brandStaged = new Map(); // key ← { act: 'approve' | 'reject' | 'edit', note } — في الذاكرة فقط حتى الإرسال
+function brandActed() { // ما أُرسل قراره يختفي فوراً، وحتى 24 ساعة إن تأخر الماك
+  let o = {};
+  try { o = JSON.parse(store.get('brand.acted') || '{}'); } catch { o = {}; }
+  const now = Date.now();
+  for (const k of Object.keys(o)) if (now - o[k] > 24 * 3600 * 1000) delete o[k];
+  return o;
+}
+function brandData() {
+  const n = vault.byPath.get(APPROVALS_FILE);
+  if (!n) return null;
+  const count = (head) => { const m = n.text.match(new RegExp('^## ' + head + ' \\((\\d+)\\)', 'm')); return m ? +m[1] : 0; };
+  const acted = brandActed();
+  const ideas = mdSection(n.text, '## أفكار محتوى جديدة').split('\n').filter((l) => /^- صف \d+:/.test(l)).map((l) => {
+    const row = +l.match(/^- صف (\d+):/)[1];
+    let rest = l.replace(/^- صف \d+:\s*/, '');
+    let snip = '';
+    const bar = rest.lastIndexOf(' | ');
+    if (bar !== -1) { snip = rest.slice(bar + 3).trim(); rest = rest.slice(0, bar); }
+    const dash = rest.lastIndexOf(' — ');
+    const text = (dash === -1 ? rest : rest.slice(0, dash)).trim();
+    const tags = dash === -1 ? [] : rest.slice(dash + 3).split(' · ').map((x) => x.trim()).filter(Boolean);
+    return { row, text, tags, snip, key: `${row}|${snip || text}` };
+  }).filter((x) => !acted[x.key]);
+  return { ideas, drafts: count('مسودات تنتظر مراجعتك'), designs: count('تصاميم تنتظر مراجعتك'), updated: (n.text.match(/^آخر تحديث:\s*(.+?)\.?\s*$/m) || [])[1] || '' };
+}
+function brandCount() { try { return brandData()?.ideas.length || 0; } catch { return 0; } }
+function brandRequest(list) { // list: [{ idea, act, note }]
+  const word = { approve: 'اعتمد', reject: 'ارفض', edit: 'عدّل' };
+  const lines = list.map(({ idea, act, note }) => `- ${word[act]} | صف ${idea.row} | أولها: ${idea.snip}${act === 'edit' ? ` | الملاحظة: ${note.replace(/\s+/g, ' ').trim()}` : ''}`);
+  const n = (a) => list.filter((x) => x.act === a).length;
+  const title = 'أفكار المحتوى: ' + [n('approve') && `اعتمد ${n('approve')}`, n('reject') && `ارفض ${n('reject')}`, n('edit') && `عدّل ${n('edit')}`].filter(Boolean).join('، ');
+  const content = `قرارات الوليد على أفكار المحتوى من تبويب «البراند» في التطبيق (أكّدها بالضغط). طلب واحد لكل القرارات.
+الشيت: My Social Media Calendar (${BRAND_SHEET})، تبويب «نظام إدارة البراندينج». الأعمدة: B فكرة المحتوى، H حالة النشر، M ملاحظات.
+لكل سطر أدناه اقرأ الصف المذكور وتحقق من شرطين معاً قبل أي كتابة: (1) حالته في H هي \`فكرة جديدة - بانتظار الموافقة\` حرفياً، (2) نص الفكرة في B يبدأ بالنص المكتوب بعد «أولها:» حرفياً. إن اختل أحدهما (أُدرج صف فتغيّرت الأرقام، أو تغيّرت الحالة) فلا تكتب شيئاً في ذلك الصف ولا تبحث عن الفكرة في صف آخر، وأبلغ.
+- اعتمد ← H = \`معتمدة\`.
+- ارفض ← H = \`مرفوضة\`.
+- عدّل ← أعد كتابة B حسب الملاحظة (بالأسلوب واللهجة نفسيهما)، واترك H كما هي، وأضف في آخر M سطراً «عُدّلت الفكرة <تاريخ اليوم> بطلب الوليد: <الملاحظة>» دون مسح الموجود.
+لا تكتب في أي عمود أو صف آخر، ولا تضع \`معتمد للنشر\` أبداً. في ردك سطر لكل صف: ما تم، أو لماذا لم يتم.
+
+${lines.join('\n')}`;
+  return { title, content };
+}
+async function brandSend(btn, ideas) {
+  const list = ideas.filter((x) => brandStaged.has(x.key)).map((x) => ({ idea: x, ...brandStaged.get(x.key) }));
+  if (!list.length) return;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const req = brandRequest(list);
+    await addToInbox({ title: req.title, content: req.content, kind: BIG_KIND, type: 'فعل' });
+    const o = brandActed();
+    for (const { idea } of list) { o[idea.key] = Date.now(); brandStaged.delete(idea.key); }
+    store.set('brand.acted', JSON.stringify(o));
+    renderTasks();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
+function brandRefreshState() {
+  const waiting = vault.notes.some((n) => n.path.startsWith('Inbox/') && n.path.includes(BRAND_REFRESH_TITLE) && /^status: (pending|working)$/m.test(n.text));
+  if (waiting) return 'يتحدّث الآن… (دقائق)';
+  const left = OPPS_REFRESH_GAP - (Date.now() - Number(store.get('brand.refreshAt') || 0));
+  return left > 0 ? `طُلب التحديث · متاح بعد ${Math.ceil(left / 60000)} د` : '';
+}
+async function brandRefresh(btn) {
+  if (brandRefreshState()) { renderTasks(); return; }
+  btn.disabled = true; btn.textContent = 'يُطلب…';
+  try {
+    await addToInbox({
+      title: BRAND_REFRESH_TITLE,
+      content: 'الوليد ضغط زر «حدّث» في تبويب البراند: أعد كتابة _System/Pending Approvals.md الآن بنفس تحديثه المجدول.\nهذا الطلب ينفّذه سكربت الماك نفسه (snapshot_approvals) بالتعرف على العنوان. إن وصلك نصاً يا نيكست الكبير فمعناه أن السكربت لم يُحدَّث بعد: لا تكتب الملف بنفسك ولا تغيّر شيئاً، وأجب بسطر أن التحديث اليدوي غير مفعّل على الماك بعد.',
+      kind: BIG_KIND, type: 'فعل',
+    });
+    store.set('brand.refreshAt', String(Date.now()));
+    renderTasks();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
+function renderBrand(body, empty) {
+  const d = brandData();
+  if (!d) { empty('قائمة الاعتمادات لم تُجهَّز بعد (ملف «Pending Approvals» غير موجود في الـ Vault).'); return; }
+  body.append(statTiles([[d.ideas.length, 'أفكار تنتظرك'], [d.drafts, 'مسودات'], [d.designs, 'تصاميم']].filter(([n], i) => i === 0 || n > 0)));
+  const ready = d.ideas.some((x) => x.snip); // سكربت الماك يكتب «أولها» ← الأزرار وزر التحديث يعملان
+  const upd = uiEl('div', 'upd');
+  upd.append(uiEl('span', '', d.updated ? 'آخر تحديث: ' + d.updated : ''));
+  if (ready) {
+    const st = brandRefreshState();
+    const rb = uiEl('button', 'pill sm', st || '↻');
+    rb.type = 'button'; rb.disabled = !!st; rb.setAttribute('aria-label', 'حدّث القائمة');
+    rb.addEventListener('click', (ev) => { ev.preventDefault(); brandRefresh(rb); });
+    upd.append(rb);
+  }
+  body.append(upd);
+  if (!d.ideas.length) { empty('لا أفكار تنتظر قرارك.'); return; }
+  if (!ready) empty('للقراءة فقط الآن: أزرار الاعتماد تعمل بعد تحديث سكربت الماك.');
+  for (const k of [...brandStaged.keys()]) if (!d.ideas.some((x) => x.key === k)) brandStaged.delete(k);
+  const bar = uiEl('div', 'choice sendbar');
+  const send = uiEl('button', 'pill sm', '');
+  send.type = 'button';
+  send.addEventListener('click', (ev) => { ev.preventDefault(); brandSend(send, d.ideas); });
+  const all = uiEl('button', 'pill sm', '');
+  all.type = 'button';
+  const sync = () => {
+    const vals = [...brandStaged.values()];
+    const c = (a) => vals.filter((v) => v.act === a).length;
+    send.hidden = !vals.length;
+    send.classList.toggle('go', vals.length > 0);
+    send.textContent = 'أرسل: ' + [c('approve') && `اعتماد ${c('approve')}`, c('reject') && `رفض ${c('reject')}`, c('edit') && `تعديل ${c('edit')}`].filter(Boolean).join(' · ');
+    all.textContent = vals.length ? 'ألغِ التحديد' : 'حدّد الكل للاعتماد';
+  };
+  all.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    if (brandStaged.size) brandStaged.clear(); else for (const x of d.ideas) if (x.snip) brandStaged.set(x.key, { act: 'approve', note: '' });
+    renderTasks();
+  });
+  if (ready) { bar.append(send, all); body.append(bar); }
+  const ul = document.createElement('ul');
+  for (const x of d.ideas) {
+    const li = uiEl('li', 'row plain idea');
+    const main = uiEl('div', 'main');
+    const t = uiEl('div', 't', x.text);
+    const chips = uiEl('div', 'chips');
+    chips.append(uiEl('span', 'chip', `صف ${x.row}`));
+    for (const g of x.tags) chips.append(uiEl('span', 'chip', g));
+    const st = brandStaged.get(x.key);
+    if (st) chips.append(uiEl('span', 'chip ' + (st.act === 'approve' ? 'ok' : 'warn'), st.act === 'approve' ? 'سيُعتمد' : st.act === 'reject' ? 'سيُرفض' : 'سيُعدَّل'));
+    main.append(t, chips);
+    if (st?.act === 'edit') main.append(uiEl('div', 'meta-sm', 'التعديل: ' + st.note));
+    t.style.cursor = 'pointer';
+    t.addEventListener('click', () => li.classList.toggle('open'));
+    if (x.snip) {
+      const row = uiEl('div', 'choice');
+      const mk = (label, fn, on) => { const b = uiEl('button', 'pill sm' + (on ? ' on' : ''), label); b.type = 'button'; b.addEventListener('click', (ev) => { ev.preventDefault(); fn(); }); return b; };
+      const stage = (act) => { if (brandStaged.get(x.key)?.act === act) brandStaged.delete(x.key); else brandStaged.set(x.key, { act, note: '' }); renderTasks(); };
+      const editRow = uiEl('div', 'choice');
+      editRow.hidden = true;
+      const input = document.createElement('input');
+      input.className = 'draft-edit'; input.placeholder = 'اكتب التعديل المطلوب على الفكرة…'; input.dir = 'auto';
+      editRow.append(input, mk('أضف التعديل', () => { const note = input.value.trim(); if (!note) return; brandStaged.set(x.key, { act: 'edit', note }); renderTasks(); }));
+      row.append(mk('اعتمد', () => stage('approve'), st?.act === 'approve'), mk('ارفض', () => stage('reject'), st?.act === 'reject'), mk('⋯', () => { editRow.hidden = !editRow.hidden; if (!editRow.hidden) input.focus(); }));
+      main.append(row, editRow);
+    }
+    li.append(main);
+    ul.append(li);
+  }
+  body.append(ul);
+  sync();
+}
 // ---------- تبويب «أهدافي»: هدف الربع والعادات ----------
 // الهدف من ملف الربع النشط في Strategy/ (type: quarter، status: active)، والعادات من Strategy/سجل العادات.md:
 //   قسم «## العادات»: - الاسم | أسبوعي أو شهري | العدد المطلوب | الوصف      قسم «## السجل»: - YYYY-MM-DD | الاسم | تم
@@ -1352,7 +1510,7 @@ function renderTasks() {
   body.replaceChildren();
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
-  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['opps', 'الفرص', oppsCount()], ['goals', 'أهدافي', goalsPending()]]) {
+  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['opps', 'الفرص', oppsCount()], ['brand', 'البراند', brandCount()], ['goals', 'أهدافي', goalsPending()]]) {
     if (demo && key === 'opps') continue;
     const b = document.createElement('button');
     b.type = 'button';
@@ -1391,6 +1549,8 @@ function renderTasks() {
     } else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
   } else if (tab === 'opps') {
     try { renderOpps(body, empty); } catch (e) { empty('تعذّر عرض لوحة الفرص: ' + (e?.message || e)); }
+  } else if (tab === 'brand') {
+    try { renderBrand(body, empty); } catch (e) { empty('تعذّر عرض أفكار البراند: ' + (e?.message || e)); }
   } else if (tab === 'goals') {
     try { renderGoals(body, empty); } catch (e) { empty('تعذّر عرض الأهداف: ' + (e?.message || e)); }
   } else {
