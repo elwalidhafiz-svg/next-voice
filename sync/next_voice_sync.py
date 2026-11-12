@@ -461,7 +461,10 @@ def run_claude(rel, body, requested_at, kind="سؤال"):
 {QUESTION_ONLY if kind != "فعل" else ""}
 - نفّذ طلب «فعل» مباشرة دون سؤال؛ الوليد أكّده بصوته في المكالمة (قاعدة «تأكيد الفهم» في soul.md لا تنطبق هنا). مسموح دون تأكيد في طلب «فعل»: القراءة والتحليل، وإضافة مهام Microsoft To Do عبر Zapier، وإضافة بنود في `_System/Open Loops.md`، وتعديل ملفات الـ Vault بقواعدها.
 - مهام Microsoft To Do تُضاف إلى القائمة الافتراضية «Tasks» دائماً، إلا إن ذكر الوليد في طلبه قائمة بالاسم. اذكر اسم القائمة في ردك.
-- استثناء وحيد في الشيتات: إن كان الطلب اعتماد فكرة محتوى، فغيّر «حالة النشر» لذلك الصف في تبويب «نظام إدارة البراندينج» من `فكرة جديدة - بانتظار الموافقة` إلى `معتمدة` فقط (تحقق أن الصف بهذه الحالة فعلاً). لا تغيّر أي حالة أخرى أبداً، ولا تضع `معتمد للنشر`، ولا تعتمد مسودة أو تصميماً أو إيميلاً؛ هذه تُعتمد في جلساتها.
+- استثناء أول في الشيتات (أفكار المحتوى)، في شيت My Social Media Calendar (1L--CVxVw1GzTHjMQypOhK80-v0NrKYwoVJOw2xhKses)، تبويب «نظام إدارة البراندينج»:
+  - طلب «فعل» لاعتماد فكرة محتوى بالصوت: غيّر «حالة النشر» (H) لذلك الصف من `فكرة جديدة - بانتظار الموافقة` إلى `معتمدة` فقط (تحقق أن الصف بهذه الحالة فعلاً).
+  - طلب «فعل» عنوانه يبدأ بـ «أفكار المحتوى:» (من تبويب «البراند»، أكّده الوليد بالضغط): نفّذ نص الطلب كما هو. لكل سطر قرار فيه اقرأ الصف المذكور، ولا تكتب فيه إلا إن تحقق الشرطان معاً: H = `فكرة جديدة - بانتظار الموافقة` حرفياً، ونص B يبدأ بالنص المكتوب بعد «أولها:» حرفياً. اعتمد ← H = `معتمدة`. ارفض ← H = `مرفوضة`. عدّل ← أعد كتابة B حسب الملاحظة واترك H كما هي، وأضف في آخر M «عُدّلت الفكرة <التاريخ> بطلب الوليد: <الملاحظة>» دون مسح الموجود. إن اختل أحد الشرطين فلا تكتب في ذلك الصف ولا تبحث عن الفكرة في صف آخر. ردك: سطر لكل صف (تم، أو لم يتم ولماذا).
+  - ممنوع في الحالتين: أي عمود غير B وH وM، أي صف غير المذكور، أي حالة غير `معتمدة` و`مرفوضة`، و`معتمد للنشر` أبداً. لا تعتمد مسودة أو تصميماً أو إيميلاً؛ هذه تُعتمد في جلساتها.
 - استثناء ثانٍ في الشيتات: طلب «فعل» عنوانه «تسجيل تقديم OPP-…» (من زر «قدّمت» في لوحة الفرص، أكّده الوليد بضغطتين): في شيت البحث عن فرص جديدة {JOBS_SHEET}، تبويب «الفرص»، ابحث عن المعرّف في العمود A، واكتب في خلية العمود U («تقديم مباشر») لذلك الصف فقط النص المذكور في الطلب («قدّمت بنفسي <التاريخ>») دون سؤال. خلية واحدة فقط: لا تغيّر أي عمود آخر، ولا K ولا S. إن لم تجد المعرّف، أو وجدته أكثر من مرة، أو كانت U غير فارغة، فلا تكتب شيئاً واذكر ذلك في ردك. اللوحة تتحدث في أقرب موعد لها.
 - استثناء ثالث في الشيتات: طلب «فعل» عنوانه يبدأ بـ «رابط لا يعمل OPP-…» (من زر «الرابط لا يعمل» في لوحة الفرص، أكّده الوليد بضغطتين): في شيت البحث عن فرص جديدة {JOBS_SHEET}، تبويب «الفرص»، صف المعرّف المذكور فقط (ابحث عنه في العمود A). ابحث عن صفحة الوظيفة نفسها (المسمى + الشركة + الرياض) وافتحها للتأكد أنها تعمل وفيها زر التقديم. إن وجدت رابطاً يعمل: اكتبه في E، وأضف في آخر T «صُحّح الرابط <التاريخ>: <من أين>» دون مسح ما فيه. إن لم تجد، أو الإعلان مغلق: اكتب في M «متخطّى»، وأضف في آخر T «رابط لا يعمل <التاريخ>: <السبب>» دون مسح ما فيه. ثلاث خلايا على الأكثر (E أو M، وT) في ذلك الصف وحده: لا K ولا S ولا U ولا أي صف آخر، ولا تخمّن رابطاً. إن لم تجد المعرّف، أو وجدته أكثر من مرة، فلا تكتب شيئاً واذكر ذلك في ردك.
 - **إيميلات التواصل** (مسودات في `_System/Outreach Drafts/`، والشكل والحالات في `_شكل الملف.md` هناك):
@@ -624,25 +627,28 @@ def notify_pending():
     log("أُبلغ على تيليجرام:", len(items))
 
 
-def snapshot_approvals(force=False):
-    """كل ساعتين نهاراً: نيكست الكبير يقرأ الشيتين ويكتب ما ينتظر اعتماد الوليد في _System/Pending Approvals.md."""
+def snapshot_approvals(force=False, manual=False):
+    """كل ساعتين نهاراً: نيكست الكبير يقرأ الشيتين ويكتب ما ينتظر اعتماد الوليد في _System/Pending Approvals.md.
+    manual=True (زر ↻ في تبويب «البراند»): لا يمس approvals_attempt ولا approvals_failed، فلا يغيّر المواعيد المجدولة.
+    يعيد True عند النجاح، ونص الخطأ عند الفشل، وNone إن لم يحن الموعد."""
     now = datetime.now(RIYADH)
     state = load_state()
-    if now.hour not in APPROVALS_HOURS and not force:
-        return
+    if now.hour not in APPROVALS_HOURS and not (force or manual):
+        return None
     last = state.get("approvals_attempt")
     wait = APPROVALS_RETRY_MIN if state.get("approvals_failed") else APPROVALS_EVERY_MIN
-    if last and not force and (now - datetime.fromisoformat(last)).total_seconds() < wait * 60:
-        return
-    state["approvals_attempt"] = now.isoformat()
-    save_state(state)
+    if last and not (force or manual) and (now - datetime.fromisoformat(last)).total_seconds() < wait * 60:
+        return None
+    if not manual:
+        state["approvals_attempt"] = now.isoformat()
+        save_state(state)
     prompt = f"""اقرأ شيتين بأداة Google Sheets (قراءة فقط، لا تكتب في أي شيت ولا ملف):
 1. شيت المحتوى «My Social Media Calendar»، تبويب «نظام إدارة البراندينج» (ابحث عنه في Drive بالاسم إن لزم). من عمود «حالة النشر» خذ الصفوف بهذه الحالات حرفياً: `فكرة جديدة - بانتظار الموافقة`، `مسودة جاهزة - بانتظار المراجعة`، `التصميم جاهز - بانتظار المراجعة`، وصفوف `النص معتمد` التي منصتها «انستجرام» (كاروسيلات يصمّمها الوليد بنفسه في Claude Design).
 2. شيت البحث عن فرص جديدة {JOBS_SHEET}: تبويب «جهات الاتصال» (عمود L حالة التواصل = `بانتظار الموافقة`) وتبويب «الفرص» (عمود M الحالة = `بانتظار الموافقة`). لا تكرر الشخص نفسه.
 
 أخرج Markdown فقط، بلا مقدمة ولا خاتمة، بهذا الشكل حرفياً (القسم الفارغ يكتب تحته «- لا شيء»):
 ## أفكار محتوى جديدة (<العدد>) — تُعتمد بالصوت
-- صف <رقم الصف في الشيت>: <الفكرة بجملة قصيرة> — <السلسلة> · <المنصة>
+- صف <رقم الصف في الشيت>: <الفكرة بجملة قصيرة> — <السلسلة> · <المنصة> | <أول 60 حرفاً من نص الفكرة في العمود B كما هو حرفياً>
 ## مسودات تنتظر مراجعتك (<العدد>) — تُعتمد في جلسة «مرحلة الكتابة»
 - <الفكرة بجملة قصيرة> — <المنصة>
 ## تصاميم تنتظر مراجعتك (<العدد>) — تُعتمد من الشيت بعد رؤيتها
@@ -652,24 +658,45 @@ def snapshot_approvals(force=False):
 ## إيميلات تواصل تنتظر موافقتك (<العدد>) — تُعتمد في جلسة «مهمة التواصل»
 - <الاسم> — <المنصب> — <الشركة> — <أولى أو متابعة> — <«نصه جاهز للمراجعة بالصوت» إن وُجد له ملف في `_System/Outreach Drafts/` بحالة `بانتظار الموافقة`، وإلا «نصه في جلسة مهمة التواصل فقط»>
 
-بالعربية، بلا روابط ولا إيميلات ولا معرّفات غير رقم الصف."""
+في سطر الفكرة: الجزء بعد « | » **منسوخ حرفاً بحرف** من خلية العمود B (نص الفكرة) لذلك الصف: أول 60 حرفاً، أو النص كله إن كان أقصر، بلا إعادة صياغة ولا تصحيح ولا ترجمة ولا حذف للعلامات أو الإيموجي. الاستبدالان الوحيدان: أي « | » أو «|» داخل النص المنسوخ يصير « - »، وأي سطر جديد يصير مسافة. لا تضع « | » في أي مكان آخر من السطر.
+
+بالعربية، بلا روابط ولا إيميلات ولا معرّفات غير رقم الصف (عدا ما يرد حرفياً في الجزء المنسوخ بعد « | »)."""
     try:
         body = claude_print(prompt)
         if "## أفكار محتوى جديدة" not in body:
             raise RuntimeError("شكل غير متوقع: " + body[:200])
+        bad = [l for l in approvals_ideas(body) if not l.partition(" | ")[2].strip()]
+        if bad:
+            raise RuntimeError("سطر فكرة بلا « | <أول النص>»: " + bad[0][:150])
     except Exception as e:  # noqa: BLE001 — يُعاد بعد APPROVALS_RETRY_MIN
-        state = load_state(); state["approvals_failed"] = True; save_state(state)
+        if not manual:
+            state = load_state(); state["approvals_failed"] = True; save_state(state)
+            incident("approvals", False, "تحديث «ما ينتظر اعتمادي»", str(e), quiet_if="board")
         log("فشل تحديث «ما ينتظر اعتمادك»:", e)
-        incident("approvals", False, "تحديث «ما ينتظر اعتمادي»", str(e), quiet_if="board")
-        return
+        return str(e)[:300] or "خطأ غير معروف"
     head = (f"---\ntype: system\nupdated: {now.strftime('%Y-%m-%d %H:%M')}\n---\n"
             f"# ما ينتظر اعتمادي\n\nملف تلقائي يكتبه سكربت نيكست الصوتي كل ساعتين نهاراً من شيت المحتوى وشيت البحث عن فرص جديدة. لا تعدّله يدوياً.\n"
             f"آخر تحديث: {human_day(now.date(), now.date())} {human_time(now)}.\n\n")
     (VAULT / APPROVALS_REL).write_text(head + body.strip() + "\n", encoding="utf-8")
-    state = load_state(); state["approvals_failed"] = False; save_state(state)
+    state = load_state(); state["approvals_success"] = now.isoformat()
+    if not manual:
+        state["approvals_failed"] = False
+    save_state(state)
     incident("approvals", True, "تحديث «ما ينتظر اعتمادي»")
     publish("voice: pending approvals snapshot")
     log("حُدّث «ما ينتظر اعتمادك».")
+    return True
+
+
+def approvals_ideas(body):
+    """أسطر «- صف …» في قسم «## أفكار محتوى جديدة» فقط."""
+    out, inside = [], False
+    for l in body.splitlines():
+        if l.startswith("## "):
+            inside = l.startswith("## أفكار محتوى جديدة")
+        elif inside and l.startswith("- صف "):
+            out.append(l)
+    return out
 
 
 def opps_slot(now):
@@ -1034,6 +1061,48 @@ def run_opps_refreshes(requests):
     publish("voice: opportunities board refresh done")
 
 
+APPROVALS_REFRESH_TITLE = "تحديث ما ينتظر اعتمادي الآن"  # الثابت نفسه في app.js (زر ↻ في تبويب «البراند»)
+APPROVALS_REFRESH_MIN_GAP = 10                             # دقائق منذ آخر تحديث ناجح
+APPROVALS_FRESH_REPLY = "القائمة محدّثة قبل دقائق"
+
+
+def is_approvals_refresh(path):
+    return path.name.split(" صوتي - ", 1)[-1].startswith(APPROVALS_REFRESH_TITLE)
+
+
+def run_approvals_refreshes(requests):
+    """طلبات زر ↻ في «البراند»: لا تمرّ بـ claude -p كطلب عادي؛ snapshot_approvals(manual=True) مرة واحدة على الأكثر،
+    على نمط run_opps_refreshes. لا يمس approvals_attempt، فلا يغيّر المواعيد المجدولة."""
+    if not requests:
+        return
+    last = load_state().get("approvals_success")
+    fresh = bool(last) and (datetime.now(RIYADH) - datetime.fromisoformat(last)).total_seconds() < APPROVALS_REFRESH_MIN_GAP * 60
+    first, rest = requests[0], requests[1:]
+    dup_reply = APPROVALS_FRESH_REPLY
+    if fresh:
+        rest = requests
+        log("«ما ينتظر اعتمادي» محدّثة قبل دقائق — لا تشغيل:", len(rest))
+    else:
+        path = first[0]
+        set_fields(path, status="working", working_since=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   attempts=int(first[1].get("attempts") or 0) + 1)
+        publish("voice: refreshing pending approvals")
+        log("تحديث يدوي لـ «ما ينتظر اعتمادي»:", path.name)
+        try:
+            result = snapshot_approvals(manual=True)
+        except Exception as e:  # noqa: BLE001
+            result = str(e)[:300]
+        if result is True:
+            finish_refresh(path, f"حُدّثت قائمة الاعتمادات {human_time(datetime.now(RIYADH))}")
+        else:
+            reason = f"لم تُحدَّث قائمة الاعتمادات: {result or 'خطأ غير معروف'}"
+            finish_refresh(path, reason, failed=True)
+            dup_reply = reason + " (طلب مكرر؛ أُبلغت بالفشل مرة واحدة)"
+    for path, _, _ in rest:
+        finish_refresh(path, dup_reply)
+    publish("voice: pending approvals refresh done")
+
+
 HABITS_REL = Path("Strategy") / "سجل العادات.md"  # الملف نفسه في app.js (تبويب «أهدافي»)
 HABIT_FILE_RE = re.compile(r"عادة:?\s+.+\s+تم\s+\d{4}-\d{2}-\d{2}")  # في اسم الملف تصير «:» مسافة
 HABIT_TITLE_RE = re.compile(r"^#\s*عادة:?\s+(.+?)\s+تم\s+(\d{4}-\d{2}-\d{2})\s*$", re.M)
@@ -1111,6 +1180,7 @@ def process_big_requests():
     pending = big_requests("pending")
     refresh = [r for r in pending if OPPS_REFRESH_TITLE in r[0].name]
     habits = [r for r in pending if is_habit_request(r[0])]
+    approvals = [r for r in pending if is_approvals_refresh(r[0])]
     try:
         run_opps_refreshes(refresh)  # ليست «فعلاً» يستدعي snapshot_approvals
     except Exception as e:  # noqa: BLE001
@@ -1119,8 +1189,12 @@ def process_big_requests():
         run_habit_requests(habits)  # وليست هذه «فعلاً» أيضاً
     except Exception as e:  # noqa: BLE001
         log("خطأ في طلبات العادات:", e)
+    try:
+        run_approvals_refreshes(approvals)  # ولا هذه
+    except Exception as e:  # noqa: BLE001
+        log("خطأ في طلبات تحديث «ما ينتظر اعتمادي»:", e)
     for path, meta, body in pending:
-        if OPPS_REFRESH_TITLE in path.name or is_habit_request(path):
+        if OPPS_REFRESH_TITLE in path.name or is_habit_request(path) or is_approvals_refresh(path):
             continue
         item = execute(path, meta, body)
         acted = acted or is_action(item)
