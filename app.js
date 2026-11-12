@@ -640,7 +640,7 @@ function boardItems(title) {
 }
 const AR_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
 // «— الأحد 25 أكتوبر» ← هل موعده خلال 7 أيام؟ (ما لا يُفهم تاريخه يُعدّ ضمن الأسبوع حتى لا يختفي)
-function withinWeek(line) {
+function withinWeek(line, days = 7) {
   const m = line.match(/(\d{1,2})\s+(يناير|فبراير|مارس|أبريل|ابريل|مايو|يونيو|يوليو|أغسطس|اغسطس|سبتمبر|أكتوبر|اكتوبر|نوفمبر|ديسمبر)/);
   if (!m) return true;
   const mo = AR_MONTHS.findIndex((x) => norm(x) === norm(m[2]));
@@ -649,7 +649,7 @@ function withinWeek(line) {
   let due = Date.UTC(y, mo, +m[1]);
   const today = Date.UTC(y, cm - 1, cd);
   if (due < today - 180 * 864e5) due = Date.UTC(y + 1, mo, +m[1]); // ديسمبر ← يناير
-  return (due - today) / 864e5 <= 7;
+  return (due - today) / 864e5 <= days;
 }
 // كلمات كل بند المميزة (الأندر بين البنود تحسم؛ العامة والتواريخ لا).
 // CHECK_STOP معرّف بعد ITEM_STOP أدناه، ويُستعمل هنا وقت الاستدعاء فقط.
@@ -1583,10 +1583,12 @@ const maskMoney = (x) => (moneyShown ? x : (x || '').replace(/\d[\d,.]*(?=\s*(ر
 // بند فيه مبلغ بعملة: تُخفى مبالغه، ومعها أي رقم آخر من ثلاث خانات فأكثر في البند نفسه (مبلغ بلا عملة غالباً). غيره يبقى كما هو.
 const MONEY_RE = /\d[\d,.]*(?=\s*(ر\.س|ريال|دولار|\$|SAR|USD))/;
 const maskItem = (x) => (moneyShown || !MONEY_RE.test(x || '') ? x : maskMoney(x).replace(/\d{1,3}(?:,\d{3})+|\d{3,}/g, '•••'));
-// بنود البحث عن فرص (سرّي): لا تُعرض في وضع العرض، بنص البند أو باسم مشروعه
+// بنود البحث عن فرص: كانت تُخفى في وضع العرض؛ بقرار الوليد (2026-11-12) صارت ظاهرة دائماً، ووضع العرض يخفي الأرقام والمبالغ فقط.
+// لإعادة الإخفاء: HIDE_SEARCH = true (يخفي بطاقة الفرص وبنودها ورقمها و«إيميلات تواصل» ونص هدف الربع).
+const HIDE_SEARCH = false;
 const SECRET_RE = /البحث عن فرص|فرص جديدة|وظيف|السيرة الذاتية|مقابلة عمل/;
 function demoFilter(list) {
-  if (moneyShown) return list;
+  if (moneyShown || !HIDE_SEARCH) return list;
   return list.filter((x) => { if (SECRET_RE.test(x)) return false; try { return !SECRET_RE.test(projectOf(x)); } catch { return true; } });
 }
 function applyDemoChrome() { // زر العين وسطر التكلفة
@@ -1631,7 +1633,7 @@ function renderGoals(body, empty) {
     q.goals.forEach((g, gi) => {
       const card = el('div', 'goal');
       const short = g.goal.split(/\s*[(،]/)[0].trim() || g.goal;
-      card.append(el('div', 'goal-title', moneyShown ? short : `الهدف ${gi + 1}`)); // نص الهدف قد يكشف ما لا يُعرض
+      card.append(el('div', 'goal-title', moneyShown ? short : HIDE_SEARCH ? `الهدف ${gi + 1}` : maskNums(short))); // مع HIDE_SEARCH يُخفى النص كله
       const now = firstNum(g.now), target = firstNum(g.target);
       if (now && target && target.val > 0) {
         const nums = el('div', 'goal-nums');
@@ -1778,9 +1780,11 @@ function renderTasks() {
   if (settings().tasksPanel === 'off' || lock.locked || !vault.byPath.size) { box.hidden = true; return; }
   const allItems = myTasks();
   panel.items = allItems; // للمكالمة: القائمة كاملة
-  const demo = !moneyShown;
+  const demo = HIDE_SEARCH && !moneyShown; // demo هنا = إخفاء البحث عن فرص؛ إخفاء الأرقام يتبع moneyShown مباشرة
   const items = demoFilter(allItems);
-  const week = demoFilter(boardItems('مفتوح الآن — قادم').filter(withinWeek));
+  const UPCOMING_DAYS = 30; // «القادم» يعرض شهراً، والمربع الثاني يعدّ ما في الأسبوع منه
+  const week = demoFilter(boardItems('مفتوح الآن — قادم').filter((x) => withinWeek(x, UPCOMING_DAYS)));
+  const weekOnly = week.filter((x) => withinWeek(x, 7)).length;
   const props = demoFilter(boardItems('مقترحات للـ Open Loops (تنتظر قرارك)'));
   applyDemoChrome();
   // التبويبان القديمان («الفرص» و«البراند») صارا لوحتين داخل «مشاريعي»
@@ -1826,9 +1830,9 @@ function renderTasks() {
     let old = 0;
     for (const x of props) { try { const a = proposalAge(x); if (a != null && a >= PROPOSAL_OLD_DAYS) old++; } catch { /* اختياري */ } }
     const tomorrow = week.filter((x) => dueInfo(x.split(' ← ')[0])?.days === -1).length;
-    body.append(statTiles([[week.length, 'هذا الأسبوع'], [tomorrow, 'غداً'], [props.length, 'مقترحات'], [old, 'قديمة']].filter(([n], i) => i === 0 || i === 2 || n > 0)));
-    body.append(uiEl('div', 'grp', `هذا الأسبوع · ${week.length}`));
-    if (week.length) body.append(panelList(week, { kind: 'week' })); else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
+    body.append(statTiles([[week.length, 'هذا الشهر'], [weekOnly, 'هذا الأسبوع'], [tomorrow, 'غداً'], [props.length, 'مقترحات'], [old, 'قديمة']].filter(([n], i) => i === 0 || i === 3 || n > 0)));
+    body.append(uiEl('div', 'grp', `هذا الشهر · ${week.length}`));
+    if (week.length) body.append(panelList(week, { kind: 'week' })); else empty('لا شيء موعده خلال الثلاثين يوماً القادمة.');
     if (props.length) {
       const openP = old > 0; // مقترح قديم ينتظر قراراً: القسم يظهر مفتوحاً
       const h = uiEl('div', 'grp fold');
