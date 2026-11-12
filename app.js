@@ -1206,31 +1206,41 @@ function goalsPending() { // عادات لم تكتمل لفترتها ولم ت
     return hd.defs.filter((h) => { const st = habitState(h, hd.log, date); return st.count < h.need && !st.today; }).length;
   } catch { return 0; }
 }
+// خصوصية الأرقام: التطبيق قد يُعرض على الناس، فأرقام الهدف (الدخل) والمبالغ مخفية افتراضياً عند كل فتح.
+// زر «إظهار الأرقام» يكشفها لهذه الجلسة فقط (لا يُحفظ)، وزر «إخفاء» يعيدها.
+let moneyShown = false;
+const maskNums = (x) => (moneyShown ? x : (x || '').replace(/\d[\d,.]*/g, '•••'));
+const maskMoney = (x) => (moneyShown ? x : (x || '').replace(/\d[\d,.]*(?=\s*(ر\.س|ريال|دولار|\$|SAR|USD))/g, '•••'));
 const firstNum = (x) => { const m = (x || '').match(/\d[\d,]*(?:\.\d+)?/); return m ? { text: m[0], val: parseFloat(m[0].replace(/,/g, '')) } : null; };
 // عرض مبسّط: عنوان قصير + الرقم الآن من المستهدف + شريط، والتفاصيل الكاملة تظهر بالضغط. العادة: اسم ونقاط بعدد المطلوب وزر.
 function renderGoals(body, empty) {
   const { date } = riyadhNow();
   const q = activeQuarter();
-  const head = (t) => { const h = document.createElement('div'); h.className = 'grp'; h.textContent = t; body.append(h); };
+  const head = (t) => { const h = document.createElement('div'); h.className = 'grp'; h.textContent = t; body.append(h); return h; };
   const el = (tag, cls, text) => { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; };
   if (!q) empty('لا ربع نشطاً في Strategy/ (ملف type: quarter وstatus: active).');
   else {
     const left = q.end ? Math.round((Date.parse(q.end) - Date.parse(date)) / 864e5) : null;
-    head('هدف الربع' + (left != null && left >= 0 ? ` · باقٍ ${left} يوماً` : left != null ? ' · انتهت مدته' : ''));
+    const qh = head('هدف الربع' + (left != null && left >= 0 ? ` · باقٍ ${left} يوماً` : left != null ? ' · انتهت مدته' : ''));
+    const eye = el('button', 'pill sm eye', moneyShown ? 'إخفاء الأرقام' : 'إظهار الأرقام');
+    eye.type = 'button';
+    eye.addEventListener('click', (ev) => { ev.preventDefault(); moneyShown = !moneyShown; renderTasks(); });
+    qh.append(eye);
     for (const g of q.goals) {
       const card = el('div', 'goal');
       const short = g.goal.split(/\s*[(،]/)[0].trim() || g.goal;
-      card.append(el('div', 'goal-title', short));
+      card.append(el('div', 'goal-title', maskNums(short)));
       const now = firstNum(g.now), target = firstNum(g.target);
       if (now && target && target.val > 0) {
         const nums = el('div', 'goal-nums');
-        nums.append(el('span', 'goal-now', now.text), el('span', 'goal-of', ` من ${g.target}`));
+        nums.append(el('span', 'goal-now', maskNums(now.text)), el('span', 'goal-of', ` من ${maskNums(g.target)}`));
         const bar = el('div', 'goal-bar'), fill = el('div', 'goal-fill');
         fill.style.width = Math.max(2, Math.min(100, Math.round((now.val / target.val) * 100))) + '%';
+        if (!moneyShown) bar.hidden = true; // النسبة تكشف الرقم إن عُرف أحد الطرفين
         bar.append(fill);
         card.append(nums, bar);
-      } else if (g.now || g.target) card.append(el('div', 'meta-sm', [g.now && `الآن ${g.now}`, g.target && `المستهدف ${g.target}`].filter(Boolean).join(' · ')));
-      const more = el('div', 'meta-sm', [g.goal !== short ? g.goal : '', g.start && `البداية: ${g.start}`, g.state && `الحالة: ${g.state}`].filter(Boolean).join(' · '));
+      } else if (g.now || g.target) card.append(el('div', 'meta-sm', maskNums([g.now && `الآن ${g.now}`, g.target && `المستهدف ${g.target}`].filter(Boolean).join(' · '))));
+      const more = el('div', 'meta-sm', maskNums([g.goal !== short ? g.goal : '', g.start && `البداية: ${g.start}`, g.state && `الحالة: ${g.state}`].filter(Boolean).join(' · ')));
       more.hidden = true;
       card.append(more);
       card.addEventListener('click', () => { more.hidden = !more.hidden; });
@@ -1252,7 +1262,7 @@ function renderGoals(body, empty) {
     for (let i = 0; i < Math.min(n, 7); i++) dots.append(el('i', i < st.count ? 'on' : ''));
     dots.title = `${st.count} من ${h.need} ${h.monthly ? 'هذا الشهر' : 'هذا الأسبوع'}`;
     main.append(dots);
-    const desc = el('div', 'meta-sm', [dots.title, h.desc].filter(Boolean).join(' · '));
+    const desc = el('div', 'meta-sm', [dots.title, maskMoney(h.desc)].filter(Boolean).join(' · '));
     desc.hidden = true;
     main.append(desc);
     main.addEventListener('click', () => { desc.hidden = !desc.hidden; });
