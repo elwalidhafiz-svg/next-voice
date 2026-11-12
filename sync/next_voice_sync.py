@@ -1033,17 +1033,93 @@ def run_opps_refreshes(requests):
     publish("voice: opportunities board refresh done")
 
 
+HABITS_REL = Path("Strategy") / "سجل العادات.md"  # الملف نفسه في app.js (تبويب «أهدافي»)
+HABIT_FILE_RE = re.compile(r"عادة:?\s+.+\s+تم\s+\d{4}-\d{2}-\d{2}")  # في اسم الملف تصير «:» مسافة
+HABIT_TITLE_RE = re.compile(r"^#\s*عادة:?\s+(.+?)\s+تم\s+(\d{4}-\d{2}-\d{2})\s*$", re.M)
+HABIT_MAX_AGE = 7  # أيام
+
+
+def is_habit_request(path):
+    return bool(HABIT_FILE_RE.search(path.name))
+
+
+def log_habit(body):
+    """يضيف «- التاريخ | الاسم | تم» في آخر قسم «## السجل». يعيد (نجح، سطر الرد)."""
+    m = HABIT_TITLE_RE.search(body)
+    if not m:
+        return False, "لم يُسجَّل: عنوان الطلب ليس بصيغة «عادة: <الاسم> تم <YYYY-MM-DD>»"
+    name, day = m.group(1).strip(), m.group(2)
+    try:
+        d = date.fromisoformat(day)
+    except ValueError:
+        return False, f"لم يُسجَّل: التاريخ {day} غير صحيح"
+    today = datetime.now(RIYADH).date()
+    if d > today:
+        return False, f"لم يُسجَّل: التاريخ {day} في المستقبل"
+    if (today - d).days > HABIT_MAX_AGE:
+        return False, f"لم يُسجَّل: التاريخ {day} أقدم من {HABIT_MAX_AGE} أيام"
+    path = VAULT / HABITS_REL
+    if not path.exists():
+        return False, f"لم يُسجَّل: الملف {HABITS_REL} غير موجود"
+    lines = path.read_text(encoding="utf-8").split("\n")
+    heads = [i for i, l in enumerate(lines) if l.startswith("## ")]
+    def section(title):
+        idx = [i for i in heads if lines[i].strip() == title]
+        if not idx:
+            return None
+        start = idx[-1]
+        end = next((i for i in heads if i > start), len(lines))
+        return start, end
+    defs, logsec = section("## العادات"), section("## السجل")
+    if logsec is None:
+        return False, f"لم يُسجَّل: لا يوجد قسم «## السجل» في {HABITS_REL}"
+    names = set()
+    if defs:
+        names = {l[2:].split(" | ")[0].strip() for l in lines[defs[0] + 1:defs[1]] if l.startswith("- ")}
+    if name not in names:
+        return False, f"لم يُسجَّل: «{name}» ليست عادة معرّفة في قسم «## العادات»"
+    entry = f"- {day} | {name} | تم"
+    start, end = logsec
+    if any(l.strip() == entry for l in lines[start + 1:end]):
+        return True, f"عادة «{name}» مسجّلة يوم {day} من قبل"
+    at = end
+    while at > start + 1 and not lines[at - 1].strip():
+        at -= 1  # بعد آخر سطر غير فارغ في القسم
+    lines.insert(at, entry)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return True, f"سُجّلت عادة «{name}» يوم {day}"
+
+
+def run_habit_requests(requests):
+    """طلبات زر «تم» في «أهدافي»: لا تمرّ بـ claude -p. تيليجرام عند الفشل فقط."""
+    if not requests:
+        return
+    for path, _, body in requests:
+        try:
+            ok, reply = log_habit(body)
+        except Exception as e:  # noqa: BLE001
+            ok, reply = False, f"لم يُسجَّل: {str(e)[:200]}"
+        finish_refresh(path, reply, failed=not ok)
+        log("عادة:", reply)
+    publish("voice: habit logged")
+
+
 def process_big_requests():
     recover_stuck()
     acted = False
     pending = big_requests("pending")
     refresh = [r for r in pending if OPPS_REFRESH_TITLE in r[0].name]
+    habits = [r for r in pending if is_habit_request(r[0])]
     try:
         run_opps_refreshes(refresh)  # ليست «فعلاً» يستدعي snapshot_approvals
     except Exception as e:  # noqa: BLE001
         log("خطأ في طلبات تحديث لوحة الفرص:", e)
+    try:
+        run_habit_requests(habits)  # وليست هذه «فعلاً» أيضاً
+    except Exception as e:  # noqa: BLE001
+        log("خطأ في طلبات العادات:", e)
     for path, meta, body in pending:
-        if OPPS_REFRESH_TITLE in path.name:
+        if OPPS_REFRESH_TITLE in path.name or is_habit_request(path):
             continue
         item = execute(path, meta, body)
         acted = acted or is_action(item)
