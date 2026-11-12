@@ -1031,67 +1031,107 @@ function oppsRefreshRow(body) {
   row.append(btn);
   body.append(row);
 }
+// عرض مبسّط (2026-11-12): أرقام كبيرة أعلى اللوحة، بطاقة قصيرة لكل إعلان (الأزرار الثانوية خلف «⋯»)، والنتائج أرقاماً
+// وشريط أسبوع، وبقية أقسام اللوحة مطوية تُفتح بالضغط على عنوانها. إن تعذّر فهم سطور «النتائج» تُعرض كما هي.
+function uiEl(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
+function statTiles(list) {
+  const row = uiEl('div', 'stats');
+  for (const [n, label] of list) { const t = uiEl('div', 'stat'); t.append(uiEl('b', '', String(n)), uiEl('span', '', label)); row.append(t); }
+  return row;
+}
+function oppsResults(lines) { // «الفئة: أُرسل n · ردّ n · مقابلة n» + «تقديم مباشر: n» + «الأسبوع n من m»
+  const out = { cats: [], sent: 0, replies: 0, interviews: 0, direct: null, week: null, rest: [] };
+  for (const l of lines) {
+    let m = l.match(/^(.+?):\s*أُرسل\s*(\d+)\s*·\s*ردّ\s*(\d+)\s*·\s*مقابلة\s*(\d+)/);
+    if (m) { out.cats.push({ name: m[1].trim(), sent: +m[2], replies: +m[3], interviews: +m[4] }); out.sent += +m[2]; out.replies += +m[3]; out.interviews += +m[4]; continue; }
+    m = l.match(/^تقديم مباشر:\s*(\d+)/);
+    if (m) { out.direct = +m[1]; continue; }
+    m = l.match(/^الأسبوع\s*(\d+)\s*من\s*(\d+)/);
+    if (m) { out.week = [+m[1], +m[2]]; continue; }
+    if (l && l !== 'لا شيء') out.rest.push(l);
+  }
+  return out.cats.length ? out : null;
+}
+function foldSection(body, title, lines) { // قسم مطوي: العنوان يفتحه ويغلقه
+  const h = uiEl('div', 'grp fold', title + ' ▾');
+  const ul = document.createElement('ul');
+  ul.hidden = true;
+  for (const l of (lines.length ? lines : ['لا شيء'])) ul.append(uiEl('li', 'plain', l));
+  h.addEventListener('click', () => { ul.hidden = !ul.hidden; h.textContent = title + (ul.hidden ? ' ▾' : ' ▴'); });
+  body.append(h, ul);
+}
+function oppsAdCard(x, cvs) {
+  const li = uiEl('li', 'plain ad');
+  const main = uiEl('div', 'main');
+  const top = uiEl('div', 'ad-top');
+  top.append(uiEl('span', 'ad-co', x.company));
+  if (x.score) top.append(uiEl('span', 'badge', x.score));
+  main.append(top, uiEl('div', 'meta-sm', x.role));
+  const row = uiEl('div', 'choice');
+  if (x.url) { const a = uiEl('a', 'pill sm', 'افتح الإعلان'); a.href = x.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; row.append(a); }
+  const btn = uiEl('button', 'pill sm', 'قدّمت');
+  btn.type = 'button';
+  btn.addEventListener('click', (ev) => { ev.preventDefault(); oppsMarkApplied(x, btn); });
+  row.append(btn);
+  const extra = uiEl('div', 'choice');
+  extra.hidden = true;
+  const cv = cvFor(x.role, cvs);
+  if (cv) extra.append(cvLink(cv, 'السيرة: ' + cv.name));
+  for (const c of cvs.filter((c) => c !== cv)) extra.append(cvLink(c, c.name));
+  const badBtn = uiEl('button', 'pill sm', 'الرابط لا يعمل');
+  badBtn.type = 'button';
+  badBtn.addEventListener('click', (ev) => { ev.preventDefault(); oppsBadLink(x, badBtn); });
+  extra.append(badBtn);
+  const more = uiEl('button', 'pill sm', '⋯');
+  more.type = 'button';
+  more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; });
+  row.append(more);
+  main.append(row, extra, uiEl('div', 'meta-sm ad-id', x.id));
+  li.append(main);
+  return li;
+}
 function renderOpps(body, empty) {
   const b = oppsBoard();
   if (!b) { empty('لوحة الفرص لم تُجهَّز بعد (ملف «Opportunities Board» غير موجود في الـ Vault).'); try { renderDrafts(body); } catch (e) { /* العرض اختياري */ } return; }
+  const applySec = b.sections.find(oppsIsApply);
+  const ads = applySec ? oppsApplyItems(applySec) : [];
+  const resSec = b.sections.find((x) => x.title.startsWith('النتائج'));
+  let res = null;
+  try { res = resSec ? oppsResults(resSec.lines) : null; } catch (e) { res = null; }
+  let draftsN = 0;
+  try { draftsN = outreachDrafts().length; } catch (e) { /* لا مسودات */ }
+  const tiles = [[draftsN, 'رسائل تنتظرك'], [ads.length, 'إعلانات']];
+  if (res) tiles.push([res.sent, 'أُرسل'], [res.replies, 'ردود']);
+  body.append(statTiles(tiles));
   if (b.updated) empty('آخر تحديث: ' + b.updated);
   try { oppsRefreshRow(body); } catch (e) { /* الزر اختياري */ }
   try { renderDrafts(body); } catch (e) { empty('تعذّر عرض الرسائل: ' + (e?.message || e)); }
-  for (const sec of b.sections) {
-    const h = document.createElement('div');
-    h.className = 'grp';
-    h.textContent = sec.title;
-    const ul = document.createElement('ul');
-    if (oppsIsApply(sec)) {
-      const items = oppsApplyItems(sec);
-      const cvs = cvLinks();
-      for (const x of items) {
-        const li = document.createElement('li');
-        li.className = 'plain';
-        const main = document.createElement('div');
-        main.className = 'main';
-        main.append(document.createTextNode(`${x.company} — ${x.role}`));
-        const meta = document.createElement('div');
-        meta.className = 'meta-sm';
-        meta.textContent = [x.id, x.score && `الدرجة ${x.score}`].filter(Boolean).join(' · ');
-        const row = document.createElement('div');
-        row.className = 'choice';
-        if (x.url) { const a = document.createElement('a'); a.className = 'pill sm'; a.href = x.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = 'افتح الإعلان'; row.append(a); }
-        const btn = document.createElement('button');
-        btn.type = 'button'; btn.className = 'pill sm'; btn.textContent = 'قدّمت';
-        btn.addEventListener('click', (ev) => { ev.preventDefault(); oppsMarkApplied(x, btn); });
-        const cv = cvFor(x.role, cvs);
-        let others = null;
-        if (cv) {
-          row.append(cvLink(cv, 'السيرة'));
-          meta.textContent += ` · السيرة المقترحة: ${cv.name}`;
-          const rest = cvs.filter((c) => c !== cv);
-          if (rest.length) {
-            others = document.createElement('div');
-            others.className = 'choice'; others.hidden = true;
-            for (const c of rest) others.append(cvLink(c, c.name));
-            const more = document.createElement('button');
-            more.type = 'button'; more.className = 'pill sm'; more.textContent = 'نسخة أخرى';
-            more.addEventListener('click', (ev) => { ev.preventDefault(); others.hidden = !others.hidden; });
-            row.append(more);
-          }
-        }
-        row.append(btn);
-        const badBtn = document.createElement('button');
-        badBtn.type = 'button'; badBtn.className = 'pill sm'; badBtn.textContent = 'الرابط لا يعمل';
-        badBtn.addEventListener('click', (ev) => { ev.preventDefault(); oppsBadLink(x, badBtn); });
-        row.append(badBtn);
-        main.append(meta, row);
-        if (others) main.append(others);
-        li.append(main);
-        ul.append(li);
-      }
-      if (!items.length) { const li = document.createElement('li'); li.className = 'plain'; li.textContent = 'لا إعلانات تنتظر تقديمك.'; ul.append(li); }
-    } else {
-      const lines = sec.lines.length ? sec.lines : ['لا شيء'];
-      for (const l of lines) { const li = document.createElement('li'); li.className = 'plain'; li.textContent = l; ul.append(li); }
+  body.append(uiEl('div', 'grp', 'قدّم على الإعلانات'));
+  const ul = document.createElement('ul');
+  const cvs = cvLinks();
+  for (const x of ads) ul.append(oppsAdCard(x, cvs));
+  if (!ads.length) ul.append(uiEl('li', 'plain', 'لا إعلانات تنتظر تقديمك.'));
+  body.append(ul);
+  if (res) {
+    body.append(uiEl('div', 'grp', 'النتائج'));
+    const t2 = [[res.interviews, 'مقابلات']];
+    if (res.direct != null) t2.push([res.direct, 'تقديم مباشر']);
+    body.append(statTiles(t2));
+    if (res.week) {
+      const wrap = uiEl('div', 'goal');
+      wrap.style.cursor = 'default';
+      wrap.append(uiEl('div', 'meta-sm', `الأسبوع ${res.week[0]} من ${res.week[1]}`));
+      const bar = uiEl('div', 'goal-bar'), fill = uiEl('div', 'goal-fill');
+      fill.style.width = Math.max(2, Math.min(100, Math.round((res.week[0] / res.week[1]) * 100))) + '%';
+      bar.append(fill);
+      wrap.append(bar);
+      body.append(wrap);
     }
-    body.append(h, ul);
+    foldSection(body, 'حسب القناة', [...res.cats.map((c) => `${c.name}: أُرسل ${c.sent} · ردّ ${c.replies} · مقابلة ${c.interviews}`), ...res.rest]);
+  }
+  for (const sec of b.sections) {
+    if (sec === applySec || (res && sec === resSec)) continue;
+    foldSection(body, sec.title, oppsReal(sec.lines));
   }
 }
 // ---------- تبويب «أهدافي»: هدف الربع والعادات ----------

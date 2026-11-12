@@ -121,6 +121,16 @@
   .tasks li.plain { cursor: default; }
   .tasks li .xbtn { flex: none; padding: 3px 10px; font-size: 12px; align-self: flex-start; }
   .tasks li .xbtn:disabled { opacity: .6; }
+  .tasks .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 8px; margin: 10px 0 4px; }
+  .tasks .stat { border: 1px solid var(--line); border-radius: 12px; padding: 10px 4px 8px; text-align: center; }
+  .tasks .stat b { display: block; font-size: 22px; font-weight: 700; line-height: 1.2; }
+  .tasks .stat span { font-size: 11px; color: var(--muted); }
+  .tasks .grp.fold { cursor: pointer; padding: 6px 0; }
+  .tasks li.ad { padding: 12px 2px; }
+  .tasks .ad-top { display: flex; align-items: center; gap: 8px; }
+  .tasks .ad-co { font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
+  .tasks .badge { flex: none; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .tasks .ad-id { font-size: 11px; opacity: .6; margin-top: 6px; }
   .tasks .goal { padding: 10px 2px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
   .tasks .goal-title { font-size: 14px; line-height: 1.5; }
   .tasks .goal-nums { margin-top: 6px; display: flex; align-items: baseline; gap: 6px; }
@@ -291,6 +301,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261112b"></script>
+<script type="module" src="app.js?v=20261112c"></script>
 </body>
 </html>
