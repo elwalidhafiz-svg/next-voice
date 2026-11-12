@@ -1293,7 +1293,69 @@ function renderBrandReplies(body) {
     body.append(ul);
   } else h.style.cursor = 'default';
 }
-function brandCount() { try { return brandData()?.ideas.length || 0; } catch { return 0; } }
+// لوحة البراند (المرحلة 4): _System/Brand Board.md ملف تلقائي من شيت المحتوى (يكتبه سكربت الماك مع «ما ينتظر اعتمادي»).
+// متابعة وروابط فقط: المسودات والتصاميم تُعتمد في جلساتها (النص ليس في الشيت قبل الاعتماد)، فالأزرار هنا تفتح الجلسة أو المعاينة.
+// شكل الملف — أقسام «## عنوان» تحتها أسطر، والفاصل « | »، والحقل الفارغ «-»:
+//   ## راجع المسودات / ## راجع التصاميم / ## ينتظر منك:  - صف <ن> | <المنصة> | <الفكرة بجملة قصيرة> | <ملاحظة قصيرة> | <رابط الجلسة> | <رابط التصميم أو المعاينة>
+//   ## مجدول:  - صف <ن> | <المنصة> | <الفكرة بجملة قصيرة> | <الموعد>
+//   ## نُشر هذا الأسبوع:  - <المنصة>: <ن> من <الهدف>
+const BRAND_BOARD_FILE = '_System/Brand Board.md';
+const BRAND_ACTION_SECTIONS = ['راجع المسودات', 'راجع التصاميم', 'ينتظر منك'];
+function brandBoard() {
+  const n = vault.byPath.get(BRAND_BOARD_FILE);
+  if (!n) return null;
+  const sec = (title) => mdSection(n.text, '## ' + title).split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).filter((l) => l && l !== 'لا شيء');
+  const link = (x) => (/^https:\/\/\S+$/.test(x || '') ? x : '');
+  const item = (l) => { const p = l.split(' | ').map((x) => x.trim()); return { row: (p[0] || '').replace(/^صف\s*/, ''), platform: p[1] || '', text: p[2] || '', note: p[3] && p[3] !== '-' ? p[3] : '', session: link(p[4]), design: link(p[5]) }; };
+  const out = { actions: BRAND_ACTION_SECTIONS.map((title) => ({ title, items: sec(title).map(item) })) };
+  out.scheduled = sec('مجدول').map((l) => { const p = l.split(' | ').map((x) => x.trim()); return { row: (p[0] || '').replace(/^صف\s*/, ''), platform: p[1] || '', text: p[2] || '', when: p[3] || '' }; });
+  out.week = sec('نُشر هذا الأسبوع').map((l) => l.match(/^(.+?):\s*(\d+)\s*من\s*(\d+)/)).filter(Boolean).map((m) => ({ name: m[1].trim(), n: +m[2], of: +m[3] }));
+  return out;
+}
+function renderBrandBoard(body, b) {
+  for (const s of b.actions) {
+    if (!s.items.length) continue;
+    body.append(uiEl('div', 'grp', `${s.title} · ${s.items.length}`));
+    const ul = document.createElement('ul');
+    for (const x of s.items) {
+      const li = uiEl('li', 'row plain idea');
+      const main = uiEl('div', 'main');
+      const t = uiEl('div', 't', x.text);
+      t.style.cursor = 'pointer';
+      t.addEventListener('click', () => li.classList.toggle('open'));
+      const chips = uiEl('div', 'chips');
+      if (x.row) chips.append(uiEl('span', 'chip', `صف ${x.row}`));
+      if (x.platform) chips.append(uiEl('span', 'chip', x.platform));
+      main.append(t, chips);
+      if (x.note) main.append(uiEl('div', 'meta-sm', x.note));
+      const row = uiEl('div', 'choice');
+      const a = (label, url) => { const e = uiEl('a', 'pill sm', label); e.href = url; e.target = '_blank'; e.rel = 'noopener noreferrer'; return e; };
+      if (x.session) row.append(a('افتح الجلسة', x.session));
+      if (x.design) row.append(a('شاهد التصميم', x.design));
+      if (row.children.length) main.append(row); else main.append(uiEl('div', 'meta-sm', 'لا رابط مسجّلاً في الشيت: افتح جلسة المهمة من Claude.'));
+      li.append(main);
+      ul.append(li);
+    }
+    body.append(ul);
+  }
+  if (b.week.length) {
+    body.append(uiEl('div', 'grp', 'نُشر هذا الأسبوع'));
+    for (const w of b.week) {
+      const wrap = uiEl('div', 'goal');
+      wrap.style.cursor = 'default';
+      wrap.append(uiEl('div', 'meta-sm', `${w.name}: ${w.n} من ${w.of}`));
+      const bar = uiEl('div', 'goal-bar'), fill = uiEl('div', 'goal-fill');
+      fill.style.width = (w.of > 0 ? Math.max(2, Math.min(100, Math.round((w.n / w.of) * 100))) : 2) + '%';
+      bar.append(fill);
+      wrap.append(bar);
+      body.append(wrap);
+    }
+  }
+  if (b.scheduled.length) foldSection(body, `مجدول · ${b.scheduled.length}`, b.scheduled.map((x) => `${x.when} · ${x.platform} · ${x.text}`));
+}
+function brandCount() { // ما يحتاج فعلاً منه: أفكار تنتظر قراره + مسودات وتصاميم وما ينتظر منه في لوحة البراند
+  try { const b = brandBoard(); return (brandData()?.ideas.length || 0) + (b ? b.actions.reduce((s, x) => s + x.items.length, 0) : 0); } catch { return 0; }
+}
 function brandRequest(list) { // list: [{ idea, act, note }]
   const word = { approve: 'اعتمد', reject: 'ارفض', edit: 'عدّل' };
   const lines = list.map(({ idea, act, note }) => `- ${word[act]} | صف ${idea.row} | أولها: ${idea.snip}${act === 'edit' ? ` | الملاحظة: ${note.replace(/\s+/g, ' ').trim()}` : ''}`);
@@ -1349,7 +1411,11 @@ async function brandRefresh(btn) {
 function renderBrand(body, empty) {
   const d = brandData();
   if (!d) { empty('قائمة الاعتمادات لم تُجهَّز بعد (ملف «Pending Approvals» غير موجود في الـ Vault).'); return; }
-  body.append(statTiles([[d.ideas.length, 'أفكار تنتظرك'], [d.drafts, 'مسودات'], [d.designs, 'تصاميم']].filter(([n], i) => i === 0 || n > 0)));
+  let board = null;
+  try { board = brandBoard(); } catch (e) { board = null; }
+  const nDrafts = board ? board.actions[0].items.length : d.drafts;
+  const nDesigns = board ? board.actions[1].items.length : d.designs;
+  body.append(statTiles([[d.ideas.length, 'أفكار تنتظرك'], [nDrafts, 'مسودات'], [nDesigns, 'تصاميم'], [board ? board.scheduled.length : 0, 'مجدول']].filter(([n], i) => i === 0 || n > 0)));
   const ready = d.ideas.some((x) => x.snip); // سكربت الماك يكتب «أولها» ← الأزرار وزر التحديث يعملان
   const upd = uiEl('div', 'upd');
   upd.append(uiEl('span', '', d.updated ? 'آخر تحديث: ' + d.updated : ''));
@@ -1362,6 +1428,8 @@ function renderBrand(body, empty) {
   }
   body.append(upd);
   try { renderBrandReplies(body); } catch (e) { /* القسم اختياري */ }
+  if (board) { try { renderBrandBoard(body, board); } catch (e) { empty('تعذّر عرض لوحة البراند: ' + (e?.message || e)); } }
+  if (board && d.ideas.length) body.append(uiEl('div', 'grp', `اعتمد الأفكار · ${d.ideas.length}`));
   if (!d.ideas.length) { empty('لا أفكار تنتظر قرارك.'); return; }
   if (!ready) empty('للقراءة فقط الآن: أزرار الاعتماد تعمل بعد تحديث سكربت الماك.');
   for (const k of [...brandStaged.keys()]) if (!d.ideas.some((x) => x.key === k)) brandStaged.delete(k);
