@@ -715,11 +715,12 @@ async function closeItem(x, kind, btn) {
     btn.dataset.step = ''; btn.disabled = false; btn.classList.remove('on'); btn.textContent = 'تعذّر';
   }
 }
-const panel = { said: '', terms: [], items: [], tab: '' };
+const panel = { said: '', terms: [], items: [], tab: '', sub: '' };
 // عرض مبسّط (2026-11-12): سطر واحد لكل بند (يُقصّ إن طال) وتحته شارات صغيرة: المشروع، والموعد أو «متأخر n»، و«قديم · n يوماً».
 // الضغط على البند يفتحه: النص كاملاً وتاريخه وزرّا «اتصال» و«شات» (وفي المكالمة «حدّثني عنه»). «أغلق» أيقونة: ✓ للمهام و✕ للمقترحات
 // (تجاهل لا إنجاز)، بالضغطتين نفسيهما.
 function itemLate(x) { // عدد أيام التأخر، أو true إن كان متأخراً بلا تاريخ مفهوم، أو 0
+  if (/ — مفتوح منذ /.test(x)) return 0; // بلا موعد: ليس متأخراً
   const info = dueInfo(x.split(' ← ')[0]);
   if (info && info.days > 0) return info.days;
   return / — متأخر/.test(x) ? true : 0;
@@ -738,10 +739,12 @@ function panelList(items, opts = {}) {
     main.append(uiEl('div', 't', maskItem(text)));
     const chips = uiEl('div', 'chips');
     const proj = projectOf(x);
-    if (proj) chips.append(uiEl('span', 'chip', proj));
+    if (proj && !opts.noProj) chips.append(uiEl('span', 'chip', proj)); // داخل لوحة المشروع اسمه مكرر
     const late = itemLate(x);
     const lbl = lateLabel(info?.days);
+    const nodate = / — مفتوح منذ /.test(x);
     if (late) chips.append(uiEl('span', 'chip warn', lbl || 'متأخر'));
+    else if (nodate) chips.append(uiEl('span', 'chip', 'بلا موعد'));
     else if (info && info.due && !/^بلا موعد/.test(info.due)) chips.append(uiEl('span', 'chip', info.due));
     let age = null;
     if (opts.kind === 'proposal') { try { age = proposalAge(x); } catch { /* العلامة اختيارية */ } }
@@ -752,6 +755,7 @@ function panelList(items, opts = {}) {
     more.hidden = true;
     const bits = [];
     if (late && info && info.due) bits.push('كان موعده ' + info.due.replace(/^متأخر منذ /, ''));
+    if (nodate && info && info.due) bits.push(info.due);
     const src = x.split(' ← ')[1];
     if (src) bits.push('من: ' + maskItem(src));
     if (bits.length) more.append(uiEl('div', 'meta-sm', bits.join(' · ')));
@@ -1654,6 +1658,97 @@ function renderGoals(body, empty) {
   }
   body.append(ul);
 }
+// ---------- تبويب «مشاريعي» (المرحلة 5) ----------
+// قائمة بطاقات: البراند الشخصي والبحث عن فرص (كل منهما يفتح لوحته)، ثم بطاقة لكل مشروع له بنود مفتوحة في لوحة اليوم
+// (المفتوح والمتأخر؛ الضغط يعرض بنوده). المشروع المتوقف (status: paused في صفحته) لا بطاقة له، ومشروع البحث عن فرص
+// ممثَّل ببطاقة الفرص. في وضع العرض تغيب بطاقة الفرص. panel.sub: '' (القائمة) | 'brand' | 'opps' | 'p:<المشروع>'.
+function projectPaused(name) {
+  const n = vault.byPath.get(`Projects/${name}.md`);
+  return !!n && /^status:\s*paused\b/m.test(n.text.slice(0, 400));
+}
+function projectGroups() {
+  const all = [...myTasks(), ...boardItems('مفتوح الآن — قادم'), ...boardItems('مفتوح الآن — بلا موعد (يحتاج قرارك)')];
+  const map = new Map();
+  for (const x of all) {
+    let proj = '';
+    try { proj = projectOf(x).split(' · ')[0]; } catch { proj = ''; }
+    if (!proj || SECRET_RE.test(proj) || projectPaused(proj)) continue;
+    if (!map.has(proj)) map.set(proj, []);
+    map.get(proj).push(x);
+  }
+  return [...map.entries()].map(([name, items]) => ({ name, items, late: items.filter((x) => itemLate(x)).length }))
+    .sort((a, b) => (b.late - a.late) || (b.items.length - a.items.length));
+}
+function projectsCount(demo) { // ما ينتظره في البراند والفرص فقط؛ المتأخر في المشاريع محسوب في «اليوم»
+  return brandCount() + (demo ? 0 : oppsCount());
+}
+function renderProjects(body, empty, demo) {
+  if (demo && panel.sub === 'opps') panel.sub = '';
+  const open = (sub) => { panel.sub = sub; renderTasks(); };
+  if (panel.sub) {
+    const back = uiEl('div', 'upd');
+    const bb = uiEl('button', 'pill sm', '‹ مشاريعي');
+    bb.type = 'button';
+    bb.addEventListener('click', (ev) => { ev.preventDefault(); open(''); });
+    const name = panel.sub === 'brand' ? 'البراند الشخصي' : panel.sub === 'opps' ? 'البحث عن فرص' : panel.sub.slice(2);
+    back.append(uiEl('span', 'sub-title', name), bb);
+    body.append(back);
+    if (panel.sub === 'brand') { try { renderBrand(body, empty); } catch (e) { empty('تعذّر عرض أفكار البراند: ' + (e?.message || e)); } return; }
+    if (panel.sub === 'opps') { try { renderOpps(body, empty); } catch (e) { empty('تعذّر عرض لوحة الفرص: ' + (e?.message || e)); } return; }
+    const g = projectGroups().find((x) => x.name === name);
+    if (!g) { empty('لا بنود مفتوحة لهذا المشروع الآن.'); return; }
+    const items = demoFilter(g.items).sort((a, b) => (itemLate(b) ? 1 : 0) - (itemLate(a) ? 1 : 0));
+    body.append(statTiles([[items.length, 'مفتوح'], [items.filter((x) => itemLate(x)).length, 'متأخر']].filter(([n], i) => i === 0 || n > 0)));
+    body.append(panelList(items, { kind: 'week', noProj: true }));
+    return;
+  }
+  const ul = document.createElement('ul');
+  const card = (title, chips, sub) => {
+    const li = uiEl('li', 'row card');
+    const main = uiEl('div', 'main');
+    main.append(uiEl('div', 't', title));
+    const c = uiEl('div', 'chips');
+    for (const [text, cls] of chips) c.append(uiEl('span', 'chip' + (cls ? ' ' + cls : ''), text));
+    if (chips.length) main.append(c);
+    li.append(main, uiEl('span', 'go-arrow', '‹'));
+    li.addEventListener('click', () => open(sub));
+    ul.append(li);
+  };
+  // البراند الشخصي
+  try {
+    const d = brandData();
+    const b = (() => { try { return brandBoard(); } catch { return null; } })();
+    const chips = [];
+    if (d && d.ideas.length) chips.push([`أفكار تنتظرك ${d.ideas.length}`, 'warn']);
+    if (b) {
+      b.actions.forEach((s) => { if (s.items.length) chips.push([`${s.title} ${s.items.length}`, 'warn']); });
+      if (b.week.length) chips.push(['نُشر: ' + b.week.map((w) => `${w.name} ${w.n}/${w.of}`).join(' · ')]);
+    }
+    if (d || b) card('البراند الشخصي', chips.length ? chips : [['لا شيء ينتظرك']], 'brand');
+  } catch (e) { /* البطاقة اختيارية */ }
+  // البحث عن فرص (سرّي: لا يظهر في وضع العرض)
+  if (!demo) {
+    try {
+      const ob = oppsBoard();
+      if (ob) {
+        let drafts = 0, ads = 0;
+        try { drafts = outreachDrafts().length; } catch { /* لا مسودات */ }
+        try { const s = ob.sections.find(oppsIsApply); ads = s ? oppsApplyItems(s).length : 0; } catch { /* لا إعلانات */ }
+        const chips = [];
+        if (drafts) chips.push([`رسائل تنتظرك ${drafts}`, 'warn']);
+        if (ads) chips.push([`إعلانات ${ads}`, 'warn']);
+        card('البحث عن فرص', chips.length ? chips : [['لا شيء ينتظرك']], 'opps');
+      }
+    } catch (e) { /* البطاقة اختيارية */ }
+  }
+  for (const g of projectGroups()) {
+    const items = demoFilter(g.items);
+    if (!items.length) continue;
+    const late = items.filter((x) => itemLate(x)).length;
+    card(g.name, [[`مفتوح ${items.length}`], ...(late ? [[`متأخر ${late}`, 'warn']] : [])], 'p:' + g.name);
+  }
+  if (ul.children.length) body.append(ul); else empty('لا مشاريع فيها بنود مفتوحة.');
+}
 function renderTasks() {
   const box = document.getElementById('tasksPanel');
   if (!box) return;
@@ -1665,18 +1760,19 @@ function renderTasks() {
   const week = demoFilter(boardItems('مفتوح الآن — قادم').filter(withinWeek));
   const props = demoFilter(boardItems('مقترحات للـ Open Loops (تنتظر قرارك)'));
   applyDemoChrome();
-  const tab = demo && panel.tab === 'opps' ? 'today' : (panel.tab || 'today');
+  // التبويبان القديمان («الفرص» و«البراند») صارا لوحتين داخل «مشاريعي»
+  if (panel.tab === 'opps' || panel.tab === 'brand') { panel.sub = panel.tab; panel.tab = 'projects'; }
+  const tab = panel.tab || 'today';
   const body = document.getElementById('tasksBody');
   body.replaceChildren();
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
-  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['opps', 'الفرص', oppsCount()], ['brand', 'البراند', brandCount()], ['goals', 'أهدافي', goalsPending()]]) {
-    if (demo && key === 'opps') continue;
+  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['projects', 'مشاريعي', projectsCount(demo)], ['goals', 'أهدافي', goalsPending()]]) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tab' + (key === tab ? ' on' : '');
     b.textContent = `${label} ${n}`;
-    b.addEventListener('click', (ev) => { ev.preventDefault(); panel.tab = key; store.set('tasksTab', key); renderTasks(); });
+    b.addEventListener('click', (ev) => { ev.preventDefault(); panel.tab = key; panel.sub = ''; store.set('tasksTab', key); renderTasks(); });
     tabs.append(b);
   }
   body.append(tabs);
@@ -1707,10 +1803,8 @@ function renderTasks() {
       body.append(statTiles([[week.length, 'هذا الأسبوع'], [tomorrow, 'غداً']].filter(([n], i) => i === 0 || n > 0))); // المربع الأول يبقى دائماً (نظرة سريعة)، والصفري بعده لا يُعرض
       body.append(panelList(week, { kind: 'week' }));
     } else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
-  } else if (tab === 'opps') {
-    try { renderOpps(body, empty); } catch (e) { empty('تعذّر عرض لوحة الفرص: ' + (e?.message || e)); }
-  } else if (tab === 'brand') {
-    try { renderBrand(body, empty); } catch (e) { empty('تعذّر عرض أفكار البراند: ' + (e?.message || e)); }
+  } else if (tab === 'projects') {
+    try { renderProjects(body, empty, demo); } catch (e) { empty('تعذّر عرض المشاريع: ' + (e?.message || e)); }
   } else if (tab === 'goals') {
     try { renderGoals(body, empty); } catch (e) { empty('تعذّر عرض الأهداف: ' + (e?.message || e)); }
   } else {
