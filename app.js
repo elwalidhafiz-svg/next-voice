@@ -1191,6 +1191,11 @@ function renderOpps(body, empty) {
 const APPROVALS_FILE = '_System/Pending Approvals.md';
 const BRAND_SHEET = '1L--CVxVw1GzTHjMQypOhK80-v0NrKYwoVJOw2xhKses';
 const BRAND_REFRESH_TITLE = 'تحديث ما ينتظر اعتمادي الآن';
+let brandTalk = null; // الفكرة التي يناقشها الوليد مع نيكست الآن: { key, row, tags, full, text }
+const ideaAsk = () => {
+  const x = brandTalk;
+  return `هذه فكرة محتوى للبراند الشخصي تنتظر قراره في الشيت (صف ${x.row}${x.tags.length ? '، ' + x.tags.join('، ') : ''}): «${x.full || x.text}». هو يريد أن يفهمها أو يناقشها ليصل إلى تعديل أنسب. قل له بجملتين ما الفكرة وزاويتها، واسأله ما الذي يريد تغييره. ناقشه باختصار، واقترح صياغة أو زاوية بديلة إن طلب. حين يستقر على تعديل، صُغه «ملاحظة تعديل» واضحة من جملة أو جملتين تقول ما الذي يتغير في الفكرة بالضبط، واستدعِ idea_edit_note بها، ثم قل له إنها في بطاقة الفكرة في تبويب «البراند» ليراجعها ويرسلها. لا تستدعِ ask_big_next لهذا، ولا تغيّر شيئاً في الشيت، ولا تعتمد الفكرة ولا ترفضها: القرار يرسله هو من التبويب.`;
+};
 const brandStaged = new Map(); // key ← { act: 'approve' | 'reject' | 'edit', note } — في الذاكرة فقط حتى الإرسال
 function brandActed() { // ما أُرسل قراره يختفي فوراً، وحتى 24 ساعة إن تأخر الماك
   let o = {};
@@ -1209,11 +1214,12 @@ function brandData() {
     let rest = l.replace(/^- صف \d+:\s*/, '');
     let snip = '';
     const bar = rest.lastIndexOf(' | ');
-    if (bar !== -1) { snip = rest.slice(bar + 3).trim(); rest = rest.slice(0, bar); }
+    let full = '';
+    if (bar !== -1) { full = rest.slice(bar + 3).trim(); snip = Array.from(full).slice(0, 60).join('').trim(); rest = rest.slice(0, bar); }
     const dash = rest.lastIndexOf(' — ');
     const text = (dash === -1 ? rest : rest.slice(0, dash)).trim();
     const tags = dash === -1 ? [] : rest.slice(dash + 3).split(' · ').map((x) => x.trim()).filter(Boolean);
-    return { row, text, tags, snip, key: `${row}|${snip || text}` };
+    return { row, text, tags, snip, full, key: `${row}|${snip || text}` };
   }).filter((x) => !acted[x.key]);
   return { ideas, drafts: count('مسودات تنتظر مراجعتك'), designs: count('تصاميم تنتظر مراجعتك'), updated: (n.text.match(/^آخر تحديث:\s*(.+?)\.?\s*$/m) || [])[1] || '' };
 }
@@ -1235,7 +1241,7 @@ ${lines.join('\n')}`;
   return { title, content };
 }
 async function brandSend(btn, ideas) {
-  const list = ideas.filter((x) => brandStaged.has(x.key)).map((x) => ({ idea: x, ...brandStaged.get(x.key) }));
+  const list = ideas.filter((x) => x.snip && brandStaged.has(x.key)).map((x) => ({ idea: x, ...brandStaged.get(x.key) }));
   if (!list.length) return;
   btn.disabled = true; btn.textContent = '…';
   try {
@@ -1320,8 +1326,22 @@ function renderBrand(body, empty) {
     if (st) chips.append(uiEl('span', 'chip ' + (st.act === 'approve' ? 'ok' : 'warn'), st.act === 'approve' ? 'سيُعتمد' : st.act === 'reject' ? 'سيُرفض' : 'سيُعدَّل'));
     main.append(t, chips);
     if (st?.act === 'edit') main.append(uiEl('div', 'meta-sm', 'التعديل: ' + st.note));
+    const more = uiEl('div', 'more');
+    more.hidden = true;
+    // أقصر من 60 حرفاً = الشكل القديم (أول النص فقط): لا يُعرض كنص كامل
+    if (Array.from(x.full || '').length > 60) { const f = uiEl('div', 'draft', x.full); f.dir = 'auto'; more.append(f); }
+    const talk = uiEl('div', 'choice');
+    more.append(talk);
+    main.append(more);
     t.style.cursor = 'pointer';
-    t.addEventListener('click', () => li.classList.toggle('open'));
+    t.addEventListener('click', () => {
+      more.hidden = !more.hidden; li.classList.toggle('open', !more.hidden);
+      if (more.hidden) return;
+      const mkT = (label, fn) => { const b = uiEl('button', 'pill sm', label); b.type = 'button'; b.addEventListener('click', (e) => { e.preventDefault(); brandTalk = { key: x.key, row: x.row, tags: x.tags, full: x.full, text: x.text }; fn(); }); return b; };
+      if (call.session) talk.replaceChildren(mkT('ناقشها الآن', () => askAbout(x.text, 'idea')));
+      else if (call.active) talk.replaceChildren();
+      else talk.replaceChildren(mkT('📞 اتصال', () => askAbout(x.text, 'idea')), ...(chatOn() ? [mkT('💬 شات', () => chatAbout(x.text, 'idea'))] : []));
+    });
     if (x.snip) {
       const row = uiEl('div', 'choice');
       const mk = (label, fn, on) => { const b = uiEl('button', 'pill sm' + (on ? ' on' : ''), label); b.type = 'button'; b.addEventListener('click', (ev) => { ev.preventDefault(); fn(); }); return b; };
@@ -1330,6 +1350,7 @@ function renderBrand(body, empty) {
       editRow.hidden = true;
       const input = document.createElement('input');
       input.className = 'draft-edit'; input.placeholder = 'اكتب التعديل المطلوب على الفكرة…'; input.dir = 'auto';
+      if (st?.act === 'edit') { input.value = st.note; editRow.hidden = false; } // ملاحظة جاءت من النقاش أو كُتبت: تُراجَع وتُعدَّل هنا
       editRow.append(input, mk('أضف التعديل', () => { const note = input.value.trim(); if (!note) return; brandStaged.set(x.key, { act: 'edit', note }); renderTasks(); }));
       row.append(mk('اعتمد', () => stage('approve'), st?.act === 'approve'), mk('ارفض', () => stage('reject'), st?.act === 'reject'), mk('⋯', () => { editRow.hidden = !editRow.hidden; if (!editRow.hidden) input.focus(); }));
       main.append(row, editRow);
@@ -1632,7 +1653,7 @@ function askAbout(item, kind, li) {
     (li.querySelector('.main') || li).append(row);
     return;
   }
-  const what = kind === 'proposal'
+  const what = kind === 'idea' && brandTalk ? ideaAsk() : kind === 'proposal'
     ? `هذا مقترح ينتظر قراره: «${item}». قل له بجملة ما هو ومن أين ظهر، واسأله: يضيفه بموعد، أو متابعة يومية، أو يتجاهله — ونفّذ حسب رده بقاعدة «المرور على مقترحات».`
     : `«${item}». قل له ما تعرفه عنه بجملتين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.`;
   call.session.sendRealtimeInput({ text: `(تنبيه من النظام، لا تقرأه) الوليد ضغط على هذا البند في الشاشة: ${what}` });
@@ -1640,11 +1661,11 @@ function askAbout(item, kind, li) {
 }
 // الشات عن بند: نفس طلب المكالمة، مكتوباً. يظهر للوليد سطر «👆 …» ويصل النموذج الطلب كاملاً.
 function chatAbout(item, kind) {
-  const what = kind === 'proposal'
+  const what = kind === 'idea' && brandTalk ? ideaAsk() : kind === 'proposal'
     ? `هذا مقترح ينتظر قراره: «${item}». اكتب له بسطر ما هو ومن أين ظهر، واسأله: يضيفه بموعد، أو متابعة يومية، أو يتجاهله — ونفّذ حسب رده بقاعدة «المرور على مقترحات».`
     : `«${item}». اكتب له ما تعرفه عنه بسطرين (ابحث في الـ Vault إن لزم: آخر ما حدث، ومن عنده الفعل التالي)، واسأله إن كان يريد فعل شيء فيه. لا تنفّذ شيئاً دون طلبه.`;
   const keep = store.get('tasksOpen', 'off'); setTasksOpen(false); store.set('tasksOpen', keep); // تُطوى مؤقتاً ليظهر الرد، دون تغيير الحالة المحفوظة
-  chatSend(`(تنبيه من النظام) الوليد ضغط على هذا البند في شاشة المهام واختار الشات: ${what}`, { display: '👆 حدّثني عن: ' + item.split(' ← ')[0] });
+  chatSend(`(تنبيه من النظام) الوليد ضغط على هذا البند في شاشة المهام واختار الشات: ${what}`, { display: (kind === 'idea' ? '👆 ناقش فكرة: ' : '👆 حدّثني عن: ') + item.split(' ← ')[0] });
 }
 let panelTimer = 0;
 function markSaid(text) { // ✓ يتحدّث بعد كل جملة لنيكست، بتأخير بسيط حتى لا يعيد الرسم مع كل كلمة
@@ -1853,6 +1874,17 @@ const TOOLS = [{
       description: 'استدعها مباشرة بعد أن يردّ الوليد على سؤال التأكيد («…، صح؟»)، أياً كان رده (أيوه، لا، أو غير واضح). التطبيق يقرر من كلامه هو وينفّذ أو يلغي، ويقول لك الجملة الوحيدة التي تقولها بعدها.',
     },
     {
+      name: 'idea_edit_note',
+      description: 'فقط حين يناقش الوليد معك فكرة محتوى فتحها من تبويب «البراند» ويستقر على تعديل: استدعها بملاحظة التعديل النهائية. التطبيق يضعها في بطاقة الفكرة ليراجعها ويرسلها هو؛ لا شيء يُكتب في الشيت ولا يُرسل. لا تستدعها لغير ذلك.',
+      parameters: {
+        type: 'object',
+        properties: {
+          note: { type: 'string', description: 'ملاحظة التعديل: جملة أو جملتان تقولان ما الذي يتغير في الفكرة بالضبط' },
+        },
+        required: ['note'],
+      },
+    },
+    {
       name: 'answers_heard',
       // بلا parameters: Gemini يرفض كائناً بخصائص فارغة
       description: 'استدعها بعد أن تقرأ على الوليد ردود نيكست الكبير التي أُعلنت له في هذه المكالمة، أو إن قال صراحة إنه لا يريد سماعها أبداً. لا تستدعها إن قال «بعدين» أو لم يرد؛ تبقى لتُذكر في المكالمة التالية.',
@@ -1981,6 +2013,15 @@ async function runTool(name, args = {}, confirmed = false, mode = 'voice') {
       };
     case 'confirm_action':
       return confirmAction();
+    case 'idea_edit_note': { // محلي فقط: يضع الملاحظة في بطاقة الفكرة؛ الإرسال بيد الوليد من التبويب
+      const note = String(args.note || '').replace(/\s+/g, ' ').trim();
+      if (!brandTalk) return { ok: false, error: 'لا فكرة قيد النقاش. قل له أن يفتح الفكرة من تبويب «البراند» ويضغط اتصال أو شات.' };
+      if (!note) return { ok: false, error: 'الملاحظة فارغة.' };
+      brandStaged.set(brandTalk.key, { act: 'edit', note });
+      panel.tab = 'brand';
+      try { renderTasks(); } catch { /* العرض اختياري */ }
+      return { ok: true, note: `وُضعت الملاحظة في بطاقة الفكرة (صف ${brandTalk.row}) في تبويب «البراند». قل له بجملة واحدة أن يراجعها هناك ويضغط «أرسل»، ولم يُرسل شيء بعد.` };
+    }
     case 'answers_heard': {
       const list = call.offered.splice(0);
       markAllHeard(list);
@@ -2538,6 +2579,7 @@ function toolLabel(name, args = {}) {
     case 'ask_big_next': return `📨 إلى نيكست الكبير: ${args.title || ''}`;
     case 'big_next_status': return '📬 يراجع ردود نيكست الكبير';
     case 'answers_heard': return '👂 سمع ردود نيكست الكبير';
+    case 'idea_edit_note': return `✏️ ملاحظة تعديل: ${args.note || ''}`;
     case 'confirm_action': return '🗣️ يتحقق من ردك';
     default: return name;
   }
