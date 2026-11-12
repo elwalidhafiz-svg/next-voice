@@ -1223,6 +1223,43 @@ function brandData() {
   }).filter((x) => !acted[x.key]);
   return { ideas, drafts: count('مسودات تنتظر مراجعتك'), designs: count('تصاميم تنتظر مراجعتك'), updated: (n.text.match(/^آخر تحديث:\s*(.+?)\.?\s*$/m) || [])[1] || '' };
 }
+// ردود نيكست الكبير على قرارات الأفكار خلال آخر 24 ساعة (ملفات الطلب في Inbox/ تبقى 24 ساعة بعد الرد ثم تُؤرشف):
+// ما تم، وما لم يتم ولماذا — حتى لا يعتمد الوليد على تيليجرام ليعرف أن تعديلاً رُفض.
+function brandReplies() {
+  const out = [];
+  for (const n of vault.notes) {
+    if (!n.path.startsWith('Inbox/') || n.path.startsWith('Inbox/_') || !n.path.includes('أفكار المحتوى') || !n.text.includes(`kind: ${BIG_KIND}`)) continue;
+    const f = (k) => (n.text.match(new RegExp('^' + k + ':\\s*(.+)$', 'm')) || [])[1] || '';
+    const status = f('status');
+    const when = f('answered') || f('created');
+    const at = Date.parse(when.replace(' ', 'T') + ':00+03:00');
+    if (Number.isFinite(at) && Date.now() - at > 24 * 3600 * 1000) continue;
+    const title = (n.text.match(/^# (.+)$/m) || [])[1] || '';
+    if (status === 'pending' || status === 'working') { out.push({ at: at || Date.now(), title, wait: true, lines: ['⏳ يُنفَّذ الآن على الماك (دقائق).'], bad: 0 }); continue; }
+    const m = n.text.match(/\n## (ردّ نيكست الكبير|فشل التنفيذ)\n([\s\S]*?)(?=\n## |$)/);
+    if (!m) continue;
+    const lines = m[2].split('\n').map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean);
+    const failed = m[1] === 'فشل التنفيذ' || status === 'failed';
+    out.push({ at: at || 0, title, lines, bad: failed ? 1 : lines.filter((l) => l.startsWith('❌')).length });
+  }
+  return out.sort((a, b) => b.at - a.at);
+}
+function renderBrandReplies(body) {
+  const list = brandReplies();
+  if (!list.length) return;
+  const bad = list.reduce((s, x) => s + x.bad, 0);
+  const waiting = list.some((x) => x.wait);
+  const open = bad > 0 || waiting; // ما لم يُنفَّذ أو ما زال يُنفَّذ يظهر مفتوحاً
+  const h = uiEl('div', 'grp fold');
+  const arrow = uiEl('span', 'arrow', open ? ' ▴' : ' ▾');
+  h.append(uiEl('span', '', `ردود نيكست · ${list.length}`), arrow);
+  if (bad) h.append(uiEl('span', 'chip warn', `لم يُنفَّذ ${bad}`));
+  const ul = document.createElement('ul');
+  ul.hidden = !open;
+  for (const x of list) for (const l of x.lines) ul.append(uiEl('li', 'plain reply' + (l.startsWith('❌') ? ' bad' : ''), l));
+  h.addEventListener('click', () => { ul.hidden = !ul.hidden; arrow.textContent = ul.hidden ? ' ▾' : ' ▴'; });
+  body.append(h, ul);
+}
 function brandCount() { try { return brandData()?.ideas.length || 0; } catch { return 0; } }
 function brandRequest(list) { // list: [{ idea, act, note }]
   const word = { approve: 'اعتمد', reject: 'ارفض', edit: 'عدّل' };
@@ -1291,6 +1328,7 @@ function renderBrand(body, empty) {
     upd.append(rb);
   }
   body.append(upd);
+  try { renderBrandReplies(body); } catch (e) { /* القسم اختياري */ }
   if (!d.ideas.length) { empty('لا أفكار تنتظر قرارك.'); return; }
   if (!ready) empty('للقراءة فقط الآن: أزرار الاعتماد تعمل بعد تحديث سكربت الماك.');
   for (const k of [...brandStaged.keys()]) if (!d.ideas.some((x) => x.key === k)) brandStaged.delete(k);
