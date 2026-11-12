@@ -1067,6 +1067,130 @@ function renderOpps(body, empty) {
     body.append(h, ul);
   }
 }
+// ---------- تبويب «أهدافي»: هدف الربع والعادات ----------
+// الهدف من ملف الربع النشط في Strategy/ (type: quarter، status: active)، والعادات من Strategy/سجل العادات.md:
+//   قسم «## العادات»: - الاسم | أسبوعي أو شهري | العدد المطلوب | الوصف      قسم «## السجل»: - YYYY-MM-DD | الاسم | تم
+// زر «تم» يكتب طلباً عنوانه «عادة: <الاسم> تم <التاريخ>»؛ سكربت الماك يضيف سطر السجل مباشرة (وإن وصل لنيكست الكبير نصاً
+// فنص الطلب يكفيه). الضغطة تُحفظ في الهاتف فوراً حتى يصل السطر عبر المزامنة. الأسبوع من السبت إلى الجمعة.
+const HABITS_FILE = 'Strategy/سجل العادات.md';
+function mdSection(text, head) {
+  const i = text.indexOf('\n' + head);
+  if (i === -1) return '';
+  const j = text.indexOf('\n## ', i + head.length);
+  return text.slice(i, j === -1 ? undefined : j);
+}
+const unlink = (x) => x.replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').replace(/\*\*/g, '');
+function activeQuarter() {
+  const n = vault.notes.find((x) => x.path.startsWith('Strategy/') && /^type: quarter$/m.test(x.text) && /^status: active$/m.test(x.text));
+  if (!n) return null;
+  const goals = mdSection(n.text, '## الأهداف').split('\n').filter((l) => /^\|\s*\d+\s*\|/.test(l)).map((r) => {
+    const c = r.split('|').slice(1, -1).map((x) => unlink(x.trim()));
+    return { goal: c[1] || '', target: c[3] || '', start: c[4] || '', now: c[5] || '', state: c[7] || '' };
+  });
+  return { title: unlink((n.text.match(/^# (.+)$/m) || [])[1] || ''), end: (n.text.match(/^period:.*?(\d{4}-\d{2}-\d{2})\s*$/m) || [])[1] || '', goals };
+}
+function habitsLocal() {
+  try { return JSON.parse(store.get('habits.done') || '[]').filter((x) => x && x.date && x.name); } catch { return []; }
+}
+function habitsData() {
+  const n = vault.byPath.get(HABITS_FILE);
+  if (!n) return null;
+  const defs = mdSection(n.text, '## العادات').split('\n').filter((l) => l.startsWith('- ')).map((l) => {
+    const [name = '', rhythm = '', need = '', desc = ''] = l.slice(2).split(' | ').map((x) => x.trim());
+    return { name, monthly: rhythm === 'شهري', need: Math.max(1, parseInt(need, 10) || 1), desc };
+  }).filter((h) => h.name);
+  const log = mdSection(n.text, '## السجل').split('\n').map((l) => l.match(/^- (\d{4}-\d{2}-\d{2}) \| (.+?) \| تم/)).filter(Boolean).map((m) => ({ date: m[1], name: m[2].trim() }));
+  const seen = new Set();
+  const all = [...log, ...habitsLocal()].filter((x) => { const k = x.date + '|' + x.name; if (seen.has(k)) return false; seen.add(k); return true; });
+  return { defs, log: all };
+}
+function weekStart(date) { // السبت الذي يبدأ به أسبوع هذا التاريخ
+  const d = new Date(date + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 1) % 7));
+  return d.toISOString().slice(0, 10);
+}
+function habitState(h, log, today) {
+  const mine = log.filter((x) => x.name === h.name).map((x) => x.date);
+  const from = h.monthly ? today.slice(0, 8) + '01' : weekStart(today);
+  return { count: mine.filter((d) => d >= from && d <= today).length, today: mine.includes(today) };
+}
+async function habitMark(h, btn) {
+  const { date } = riyadhNow();
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    await addToInbox({
+      title: `عادة: ${h.name} تم ${date}`,
+      content: `الوليد ضغط «تم» لعادة «${h.name}» يوم ${date} في تبويب «أهدافي».\nأضف في ${HABITS_FILE} في آخر قسم «## السجل» سطراً واحداً بهذا الشكل حرفياً: - ${date} | ${h.name} | تم\nإن كان السطر موجوداً فلا تكرره. لا تغيّر أي شيء آخر في الملف ولا في غيره، ولا تكتب في Open Loops.\n(هذا الطلب ينفّذه سكربت الماك مباشرة بالتعرف على العنوان «عادة:»؛ إن وصلك نصاً يا نيكست الكبير فنفّذه كما هو بسطر تأكيد واحد.)`,
+      kind: BIG_KIND, type: 'فعل',
+    });
+    const cut = new Date(Date.parse(date) - 40 * 864e5).toISOString().slice(0, 10); // يكفي لعدّاد الأسبوع والشهر
+    const keep = habitsLocal().filter((x) => x.date >= cut);
+    store.set('habits.done', JSON.stringify([...keep, { date, name: h.name }]));
+    renderTasks();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
+function goalsPending() { // عادات لم تكتمل لفترتها ولم تُسجَّل اليوم
+  try {
+    const hd = habitsData();
+    if (!hd) return 0;
+    const { date } = riyadhNow();
+    return hd.defs.filter((h) => { const st = habitState(h, hd.log, date); return st.count < h.need && !st.today; }).length;
+  } catch { return 0; }
+}
+function renderGoals(body, empty) {
+  const { date } = riyadhNow();
+  const q = activeQuarter();
+  const head = (t) => { const h = document.createElement('div'); h.className = 'grp'; h.textContent = t; body.append(h); };
+  if (!q) empty('لا ربع نشطاً في Strategy/ (ملف type: quarter وstatus: active).');
+  else {
+    const left = q.end ? Math.round((Date.parse(q.end) - Date.parse(date)) / 864e5) : null;
+    head('هدف الربع' + (left != null && left >= 0 ? ` · باقٍ ${left} يوماً` : left != null ? ' · انتهت مدته' : ''));
+    const ul = document.createElement('ul');
+    for (const g of q.goals) {
+      const li = document.createElement('li');
+      li.className = 'plain';
+      const main = document.createElement('div');
+      main.className = 'main';
+      main.append(document.createTextNode(g.goal));
+      const meta = document.createElement('div');
+      meta.className = 'meta-sm';
+      meta.textContent = [g.now && `الآن ${g.now}`, g.target && `المستهدف ${g.target}`, g.start && `البداية ${g.start}`].filter(Boolean).join(' · ');
+      main.append(meta);
+      li.append(main);
+      if (g.state) { const s = document.createElement('span'); s.className = 'late'; s.textContent = g.state; li.append(s); }
+      ul.append(li);
+    }
+    if (q.goals.length) body.append(ul); else empty('لا أهداف مكتوبة في ملف الربع.');
+  }
+  const hd = habitsData();
+  head('العادات');
+  if (!hd || !hd.defs.length) { empty('لا عادات معرّفة بعد (الملف «سجل العادات» غير موجود في الـ Vault أو قسم «العادات» فارغ).'); return; }
+  const ul = document.createElement('ul');
+  for (const h of hd.defs) {
+    const st = habitState(h, hd.log, date);
+    const li = document.createElement('li');
+    li.className = 'plain';
+    const main = document.createElement('div');
+    main.className = 'main';
+    main.append(document.createTextNode(h.name));
+    const meta = document.createElement('div');
+    meta.className = 'meta-sm';
+    meta.textContent = [`${st.count} من ${h.need} ${h.monthly ? 'هذا الشهر' : 'هذا الأسبوع'}`, h.desc].filter(Boolean).join(' · ');
+    main.append(meta);
+    li.append(main);
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'pill sm xbtn';
+    btn.textContent = st.today ? '✓ سُجّل اليوم' : 'تم';
+    btn.disabled = st.today;
+    btn.addEventListener('click', (ev) => { ev.preventDefault(); habitMark(h, btn); });
+    li.append(btn);
+    if (st.count >= h.need) li.classList.add('said');
+    ul.append(li);
+  }
+  body.append(ul);
+}
 function renderTasks() {
   const box = document.getElementById('tasksPanel');
   if (!box) return;
@@ -1080,7 +1204,7 @@ function renderTasks() {
   body.replaceChildren();
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
-  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['opps', 'الفرص', oppsCount()]]) {
+  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['opps', 'الفرص', oppsCount()], ['goals', 'أهدافي', goalsPending()]]) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tab' + (key === tab ? ' on' : '');
@@ -1109,13 +1233,15 @@ function renderTasks() {
     if (week.length) body.append(panelList(week, { kind: 'week' })); else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
   } else if (tab === 'opps') {
     try { renderOpps(body, empty); } catch (e) { empty('تعذّر عرض لوحة الفرص: ' + (e?.message || e)); }
+  } else if (tab === 'goals') {
+    try { renderGoals(body, empty); } catch (e) { empty('تعذّر عرض الأهداف: ' + (e?.message || e)); }
   } else {
     if (props.length) body.append(panelList(props, { kind: 'proposal' })); else empty('لا مقترحات تنتظر قرارك.');
   }
   const oppsN = oppsCount();
   document.getElementById('tasksTitle').textContent = ['لوحتي', `اليوم ${items.length}`, oppsN ? `الفرص ${oppsN}` : ''].filter(Boolean).join(' · ');
   const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : chatOn() ? 'اضغط بنداً لتختار: اتصال أو شات' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
-  if (tab !== 'opps' && body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
+  if (tab !== 'opps' && tab !== 'goals' && body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
   box.hidden = false;
 }
 // «— متأخر منذ الأربعاء 21 أكتوبر» / «منذ أمس السبت» / «منذ الأحد 18» ← { due, days }
