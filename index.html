@@ -126,6 +126,20 @@
   .tasks .stat b { display: block; font-size: 22px; font-weight: 700; line-height: 1.2; }
   .tasks .stat span { font-size: 11px; color: var(--muted); }
   .tasks .grp.fold { cursor: pointer; padding: 6px 0; }
+  .tasks li.row { align-items: center; padding: 10px 2px; }
+  .tasks li.row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tasks li.row.open .t { white-space: normal; overflow: visible; }
+  .tasks li.row .xbtn { align-self: center; }
+  .tasks .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .tasks .chips.foot { margin: 10px 0 12px; }
+  .tasks .chip { font-size: 11px; line-height: 1.4; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .tasks .chip.warn, .tasks .chip.old { color: var(--warn); border-color: var(--warn); }
+  .tasks .grp.fold .chip { margin-inline-start: 8px; }
+  .tasks li .xbtn.ico { width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 15px; line-height: 1; }
+  .tasks li .xbtn.ico.on { width: auto; padding: 0 10px; border-radius: 999px; font-size: 12px; }
+  .tasks li.row .more { margin-top: 6px; }
+  .tasks .upd { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); padding: 6px 0 4px; }
+  .tasks .upd .pill.sm { flex: none; padding: 4px 12px; font-size: 13px; }
   .tasks li.ad { padding: 12px 2px; }
   .tasks .ad-top { display: flex; align-items: center; gap: 8px; }
   .tasks .ad-co { font-size: 15px; font-weight: 600; flex: 1; min-width: 0; }
@@ -302,6 +316,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261112d"></script>
+<script type="module" src="app.js?v=20261112e"></script>
 </body>
 </html>

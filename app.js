@@ -697,7 +697,7 @@ function closeRequest(x, kind) {
 async function closeItem(x, kind, btn) {
   if (btn.dataset.step !== 'confirm') {
     btn.dataset.step = 'confirm'; btn.textContent = 'تأكيد؟'; btn.classList.add('on');
-    setTimeout(() => { if (btn.isConnected && btn.dataset.step === 'confirm') { btn.dataset.step = ''; btn.textContent = 'أغلق'; btn.classList.remove('on'); } }, 5000);
+    setTimeout(() => { if (btn.isConnected && btn.dataset.step === 'confirm') { btn.dataset.step = ''; btn.textContent = btn.dataset.label || 'أغلق'; btn.classList.remove('on'); } }, 5000);
     return;
   }
   btn.dataset.step = 'sending'; btn.disabled = true; btn.textContent = '…';
@@ -712,46 +712,84 @@ async function closeItem(x, kind, btn) {
   }
 }
 const panel = { said: '', terms: [], items: [], tab: '' };
+// عرض مبسّط (2026-11-12): سطر واحد لكل بند (يُقصّ إن طال) وتحته شارات صغيرة: المشروع، والموعد أو «متأخر n»، و«قديم · n يوماً».
+// الضغط على البند يفتحه: النص كاملاً وتاريخه وزرّا «اتصال» و«شات» (وفي المكالمة «حدّثني عنه»). «أغلق» أيقونة: ✓ للمهام و✕ للمقترحات
+// (تجاهل لا إنجاز)، بالضغطتين نفسيهما.
+function itemLate(x) { // عدد أيام التأخر، أو true إن كان متأخراً بلا تاريخ مفهوم، أو 0
+  const info = dueInfo(x.split(' ← ')[0]);
+  if (info && info.days > 0) return info.days;
+  return / — متأخر/.test(x) ? true : 0;
+}
 function panelList(items, opts = {}) {
   const said = norm(panel.said);
   const terms = checkTerms(items);
   const ul = document.createElement('ul');
   items.forEach((x, i) => {
     const li = document.createElement('li');
+    li.className = 'row';
     const info = dueInfo(x.split(' ← ')[0]);
     const text = x.replace(/^عليك:\s*/, '').replace(/^متابعة يومية — ([^:]+):\s*(بند واحد، هو |\S+ بنود؛ )?/, 'متابعة $1: ').replace(/^متابعة (?!يومية)[^:]+:\s*/, opts.kind ? '$&' : '').split(' ← ')[0].replace(/ — [^—]*$/, '');
     const main = document.createElement('div');
     main.className = 'main';
-    main.append(document.createTextNode(text));
-    const meta = document.createElement('div');
-    meta.className = 'meta-sm';
+    main.append(uiEl('div', 't', text));
+    const chips = uiEl('div', 'chips');
     const proj = projectOf(x);
-    const bits = [];
-    if (proj) bits.push(proj);
-    if (info && info.due && info.due !== 'اليوم') bits.push((info.days > 0 ? 'كان موعده ' : '') + info.due.replace(/^متأخر منذ /, ''));
-    if (info && info.due === 'اليوم') bits.push('موعده اليوم');
-    meta.textContent = bits.join(' · ');
-    li.append(main);
+    if (proj) chips.append(uiEl('span', 'chip', proj));
+    const late = itemLate(x);
     const lbl = lateLabel(info?.days);
-    if (lbl || (/ — متأخر/.test(x) && info?.days == null)) { const s = document.createElement('span'); s.className = 'late'; s.textContent = lbl || 'متأخر'; li.append(s); }
-    if (meta.textContent) main.append(meta);
+    if (late) chips.append(uiEl('span', 'chip warn', lbl || 'متأخر'));
+    else if (info && info.due && !/^بلا موعد/.test(info.due)) chips.append(uiEl('span', 'chip', info.due));
+    let age = null;
+    if (opts.kind === 'proposal') { try { age = proposalAge(x); } catch { /* العلامة اختيارية */ } }
+    if (age != null && age >= PROPOSAL_OLD_DAYS) chips.append(uiEl('span', 'chip old', `قديم · ${age} يوماً`));
+    if (chips.children.length) main.append(chips);
+    // التفاصيل عند الفتح: الموعد الأصلي للمتأخر، ومصدر المقترح، وزرّا الحديث عنه
+    const more = uiEl('div', 'more');
+    more.hidden = true;
+    const bits = [];
+    if (late && info && info.due) bits.push('كان موعده ' + info.due.replace(/^متأخر منذ /, ''));
+    const src = x.split(' ← ')[1];
+    if (src) bits.push('من: ' + src);
+    if (bits.length) more.append(uiEl('div', 'meta-sm', bits.join(' · ')));
+    const row = uiEl('div', 'choice');
+    more.append(row);
+    const fillRow = () => { // يُبنى عند الفتح: حالة المكالمة والشات قد تتغير بعد الرسم
+      const mk = (label, fn) => { const b = uiEl('button', 'pill sm', label); b.type = 'button'; b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fn(); }); return b; };
+      if (call.session) row.replaceChildren(mk('حدّثني عنه', () => askAbout(x, opts.kind)));
+      else if (call.active) row.replaceChildren();
+      else row.replaceChildren(mk('📞 اتصال', () => askAbout(x, opts.kind)), ...(chatOn() ? [mk('💬 شات', () => chatAbout(x, opts.kind))] : []));
+    };
+    main.append(more);
+    li.append(main);
     // ✓ عرضيّ متشدد: أندر كلمة في البند + كلمتان (كلمات مثل «صرة» و«خطة» تتكرر في بنود كثيرة)
     const ts = terms[i] || [];
     const hit = ts.filter((t) => said.includes(t)).length;
     if (ts.length && said.includes(ts[0]) && hit >= Math.min(2, ts.length)) li.classList.add('said');
-    if (opts.kind === 'proposal') {
-      let age = null;
-      try { age = proposalAge(x); } catch { /* العلامة اختيارية */ }
-      if (age != null && age >= PROPOSAL_OLD_DAYS) { const s = document.createElement('span'); s.className = 'late'; s.textContent = `قديم · ${age} يوماً`; li.append(s); }
-    }
-    const xb = document.createElement('button');
-    xb.type = 'button'; xb.className = 'pill sm xbtn'; xb.textContent = 'أغلق';
+    const icon = opts.kind === 'proposal' ? '✕' : '✓';
+    const xb = uiEl('button', 'pill sm xbtn ico', icon);
+    xb.type = 'button';
+    xb.dataset.label = icon;
+    xb.setAttribute('aria-label', opts.kind === 'proposal' ? 'تجاهل المقترح' : 'أغلق البند');
     xb.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); closeItem(x, opts.kind, xb); });
     li.append(xb);
-    li.addEventListener('click', () => askAbout(x, opts.kind, li));
+    li.addEventListener('click', () => { more.hidden = !more.hidden; li.classList.toggle('open', !more.hidden); if (!more.hidden) fillRow(); });
     ul.append(li);
   });
   return ul;
+}
+// قسم بنود يُطوى بالضغط على عنوانه. القسم الذي فيه بند متأخر لا يُطوى ابتداءً، وعنوانه يحمل «متأخر n».
+function taskGroup(body, title, list, opts = {}) {
+  const lateN = list.filter((x) => itemLate(x)).length;
+  const open = opts.open || lateN > 0;
+  const h = uiEl('div', 'grp fold');
+  const lab = uiEl('span', '', `${title} · ${list.length}`);
+  const arrow = uiEl('span', 'arrow', open ? ' ▴' : ' ▾');
+  h.append(lab, arrow);
+  if (lateN) h.append(uiEl('span', 'chip warn', lateN === list.length && lateN === 1 ? 'متأخر' : `متأخر ${lateN}`));
+  const ul = panelList(list, opts.list);
+  ul.hidden = !open;
+  h.addEventListener('click', () => { ul.hidden = !ul.hidden; arrow.textContent = ul.hidden ? ' ▾' : ' ▴'; });
+  body.append(h, ul);
 }
 // ---------- لوحة الفرص (تبويب «الفرص») ----------
 // _System/Opportunities Board.md ملف تلقائي من شيت البحث عن فرص جديدة (يكتبه سكربت الماك). العرض قراءة فقط؛
@@ -946,7 +984,7 @@ function renderDrafts(body) {
   if (!list.length) return;
   const h = document.createElement('div');
   h.className = 'grp';
-  h.textContent = `رسائل تنتظر اعتمادك (${list.length}) — اضغط رسالة لتقرأها`;
+  h.textContent = `رسائل تنتظر اعتمادك · ${list.length}`;
   const bulkRow = document.createElement('div');
   bulkRow.className = 'choice';
   const bulk = document.createElement('button');
@@ -962,7 +1000,7 @@ function renderDrafts(body) {
     main.className = 'main';
     const head = document.createElement('div');
     head.style.cursor = 'pointer';
-    head.textContent = `${d.meta.name || ''} — ${d.meta.company || ''}`;
+    head.textContent = [d.meta.name, d.meta.company].filter(Boolean).join(' — ');
     const meta = document.createElement('div');
     meta.className = 'meta-sm';
     meta.textContent = [d.meta.title, d.meta.type, d.meta.email_status, d.meta.cv && d.meta.cv !== 'بلا مرفق' ? 'مرفق: ' + d.meta.cv.replace(/^ElWalid_Hafiz_CV_|\.pdf$/g, '').replace(/_/g, ' ') : 'بلا مرفق'].filter(Boolean).join(' · ');
@@ -982,11 +1020,14 @@ function renderDrafts(body) {
     const input = document.createElement('input');
     input.className = 'draft-edit'; input.placeholder = 'اكتب التعديل المطلوب…'; input.dir = 'auto';
     editRow.append(input, mk('أرسل التعديل', (b) => draftAct(d, 'edit', b, input.value)));
-    row.append(mk('اعتمد', (b) => draftAct(d, 'approve', b)), mk('عدّل', () => { editRow.hidden = !editRow.hidden; }), mk('ألغِ', (b) => draftAct(d, 'cancel', b)));
-    box.append(subj, txt, why, row, editRow);
+    const extra = document.createElement('div');
+    extra.className = 'choice'; extra.hidden = true;
+    extra.append(mk('ألغِ', (b) => draftAct(d, 'cancel', b)));
+    row.append(mk('اعتمد', (b) => draftAct(d, 'approve', b)), mk('عدّل', () => { editRow.hidden = !editRow.hidden; }), mk('⋯', () => { extra.hidden = !extra.hidden; }));
+    box.append(meta, subj, txt, why, row, extra, editRow);
     head.addEventListener('click', () => { box.hidden = !box.hidden; if (!box.hidden) { draftsOpened.add(d.path); head.textContent = '✓ ' + head.textContent.replace(/^✓ /, ''); if (bulk.dataset.step !== 'sending') { bulk.dataset.step = ''; bulk.classList.remove('on'); draftsBulkLabel(bulk); } } });
     if (draftsOpened.has(d.path)) head.textContent = '✓ ' + head.textContent;
-    main.append(head, meta, box);
+    main.append(head, box);
     li.append(main);
     ul.append(li);
   }
@@ -1019,16 +1060,19 @@ async function oppsRefresh(btn) {
     btn.disabled = false; btn.textContent = 'تعذّر — أعد المحاولة';
   }
 }
-function oppsRefreshRow(body) {
+function oppsRefreshRow(body, updated) { // سطر واحد: «آخر تحديث …» وبجانبه ↻؛ وحالة الطلب تُكتب نصاً على الزر («يتحدّث الآن…»، «متاح بعد n د»)
   const row = document.createElement('div');
-  row.className = 'choice';
+  row.className = 'upd';
+  const lab = document.createElement('span');
+  lab.textContent = updated ? 'آخر تحديث: ' + updated : '';
   const btn = document.createElement('button');
   btn.type = 'button'; btn.className = 'pill sm';
   const st = oppsRefreshState();
-  btn.textContent = st || 'حدّث اللوحة';
+  btn.textContent = st || '↻';
+  btn.setAttribute('aria-label', 'حدّث اللوحة');
   btn.disabled = !!st;
   btn.addEventListener('click', (ev) => { ev.preventDefault(); oppsRefresh(btn); });
-  row.append(btn);
+  row.append(lab, btn);
   body.append(row);
 }
 // عرض مبسّط (2026-11-12): أرقام كبيرة أعلى اللوحة، بطاقة قصيرة لكل إعلان (الأزرار الثانوية خلف «⋯»)، والنتائج أرقاماً
@@ -1103,8 +1147,7 @@ function renderOpps(body, empty) {
   const tiles = [[draftsN, 'رسائل تنتظرك'], [ads.length, 'إعلانات']];
   if (res) tiles.push([res.sent, 'أُرسل'], [res.replies, 'ردود']);
   body.append(statTiles(tiles));
-  if (b.updated) empty('آخر تحديث: ' + b.updated);
-  try { oppsRefreshRow(body); } catch (e) { /* الزر اختياري */ }
+  try { oppsRefreshRow(body, b.updated); } catch (e) { if (b.updated) empty('آخر تحديث: ' + b.updated); }
   try { renderDrafts(body); } catch (e) { empty('تعذّر عرض الرسائل: ' + (e?.message || e)); }
   body.append(uiEl('div', 'grp', 'قدّم على الإعلانات'));
   const ul = document.createElement('ul');
@@ -1235,7 +1278,10 @@ function renderGoals(body, empty) {
         const nums = el('div', 'goal-nums');
         nums.append(el('span', 'goal-now', maskNums(now.text)), el('span', 'goal-of', ` من ${maskNums(g.target)}`));
         const bar = el('div', 'goal-bar'), fill = el('div', 'goal-fill');
-        fill.style.width = Math.max(2, Math.min(100, Math.round((now.val / target.val) * 100))) + '%';
+        // التقدم من بداية الربع (البداية ← المستهدف) لا من صفر؛ بلا بداية رقمية أو ببداية ≥ المستهدف يُقاس من صفر
+        const start = firstNum(g.start);
+        const frac = start && start.val < target.val ? (now.val - start.val) / (target.val - start.val) : now.val / target.val;
+        fill.style.width = Math.max(2, Math.min(100, Math.round(frac * 100))) + '%';
         if (!moneyShown) bar.hidden = true; // النسبة تكشف الرقم إن عُرف أحد الطرفين
         bar.append(fill);
         card.append(nums, bar);
@@ -1302,31 +1348,41 @@ function renderTasks() {
   if (tab === 'today') {
     const groups = [['عليك', (x) => x.startsWith('عليك')], ['متابعة', (x) => x.startsWith('متابعة ')], ['عند غيرك', () => true]];
     const used = new Set();
+    const parts = [];
     for (const [name, test] of groups) {
       const list = items.filter((x, i) => !used.has(i) && test(x));
       items.forEach((x, i) => { if (!used.has(i) && test(x)) used.add(i); });
-      if (!list.length) continue;
-      const h = document.createElement('div');
-      h.className = 'grp';
-      h.textContent = name === 'متابعة' ? (list[0].match(/^متابعة ([^:]+):/)?.[0].replace(':', '') || 'متابعة') : name;
-      body.append(h, panelList(list));
+      parts.push([name, list]);
     }
-    if (!items.length) empty('لا مهام موعدها اليوم.');
+    if (items.length) {
+      body.append(statTiles([[parts[0][1].length, 'عليك'], [items.filter((x) => itemLate(x)).length, 'متأخر'], [parts[1][1].length, 'متابعة'], [parts[2][1].length, 'عند غيرك']]));
+      for (const [name, list] of parts) {
+        if (!list.length) continue;
+        const title = name === 'متابعة' ? (list[0].match(/^متابعة ([^:]+):/)?.[0].replace(':', '') || 'متابعة') : name;
+        taskGroup(body, title, list, { open: name === 'عليك' });
+      }
+    } else empty('لا مهام موعدها اليوم.');
     const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim());
-    if (appr.length) empty('ينتظر اعتمادك: ' + appr.join(' · '));
+    if (appr.length) { const c = uiEl('div', 'chips foot'); c.append(uiEl('span', 'chip', 'ينتظر اعتمادك: ' + appr.join(' · '))); body.append(c); }
   } else if (tab === 'week') {
-    if (week.length) body.append(panelList(week, { kind: 'week' })); else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
+    if (week.length) {
+      body.append(statTiles([[week.length, 'هذا الأسبوع'], [week.filter((x) => dueInfo(x.split(' ← ')[0])?.days === -1).length, 'غداً']]));
+      body.append(panelList(week, { kind: 'week' }));
+    } else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
   } else if (tab === 'opps') {
     try { renderOpps(body, empty); } catch (e) { empty('تعذّر عرض لوحة الفرص: ' + (e?.message || e)); }
   } else if (tab === 'goals') {
     try { renderGoals(body, empty); } catch (e) { empty('تعذّر عرض الأهداف: ' + (e?.message || e)); }
   } else {
-    if (props.length) body.append(panelList(props, { kind: 'proposal' })); else empty('لا مقترحات تنتظر قرارك.');
+    if (props.length) {
+      let old = 0;
+      for (const x of props) { try { const a = proposalAge(x); if (a != null && a >= PROPOSAL_OLD_DAYS) old++; } catch { /* اختياري */ } }
+      body.append(statTiles([[props.length, 'مقترحات'], [old, 'قديمة']]));
+      body.append(panelList(props, { kind: 'proposal' }));
+    } else empty('لا مقترحات تنتظر قرارك.');
   }
   const oppsN = oppsCount();
   document.getElementById('tasksTitle').textContent = ['لوحتي', `اليوم ${items.length}`, oppsN ? `الفرص ${oppsN}` : ''].filter(Boolean).join(' · ');
-  const tip = call.active ? 'اضغط بنداً ليحدّثك عنه' : chatOn() ? 'اضغط بنداً لتختار: اتصال أو شات' : 'اضغط بنداً يتصل نيكست ويحدّثك عنه';
-  if (tab !== 'opps' && tab !== 'goals' && body.firstChild && !body.querySelector('.tip')) { const d = document.createElement('div'); d.className = 'appr tip'; d.textContent = tip; body.insertBefore(d, body.children[1] || null); }
   box.hidden = false;
 }
 // «— متأخر منذ الأربعاء 21 أكتوبر» / «منذ أمس السبت» / «منذ الأحد 18» ← { due, days }
