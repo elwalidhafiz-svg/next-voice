@@ -147,6 +147,11 @@
   .tasks .chip.warn, .tasks .chip.old { color: var(--warn); border-color: var(--warn); }
   .tasks .chip.ok { color: var(--ok); border-color: var(--ok); }
   .tasks li.idea { align-items: flex-start; padding: 10px 2px; }
+  .tasks .habits-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 2px; }
+  .tasks .habit-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding-block: 4px; padding-inline: 12px 6px; font-size: 13px; }
+  .tasks .habit-chip .habit-name { font-size: 13px; }
+  .tasks .habit-chip .dots { margin-inline-start: 0; }
+  .tasks .habit-chip .pill.sm { padding: 3px 12px; font-size: 12px; }
   .tasks li.card { padding: 12px 2px; }
   .tasks li.card .t { font-size: 15px; font-weight: 600; }
   .tasks .go-arrow { flex: none; color: var(--muted); font-size: 18px; }
@@ -340,6 +345,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261112q"></script>
+<script type="module" src="app.js?v=20261112r"></script>
 </body>
 </html>

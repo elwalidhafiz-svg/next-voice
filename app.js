@@ -1596,6 +1596,29 @@ function applyDemoChrome() { // زر العين وسطر التكلفة
 }
 const firstNum = (x) => { const m = (x || '').match(/\d[\d,]*(?:\.\d+)?/); return m ? { text: m[0], val: parseFloat(m[0].replace(/,/g, '')) } : null; };
 // عرض مبسّط: عنوان قصير + الرقم الآن من المستهدف + شريط، والتفاصيل الكاملة تظهر بالضغط. العادة: اسم ونقاط بعدد المطلوب وزر.
+// سطر «عادات اليوم» أعلى تبويب «اليوم»: العادات التي لم تُسجَّل اليوم ولم تكتمل لفترتها، بنقاطها وزر «تم» نفسه (habitMark).
+// لا تدخل في عدّاد «اليوم» ولا في بنوده، وحين تُسجَّل كلها يختفي السطر.
+function renderTodayHabits(body) {
+  const hd = habitsData();
+  if (!hd || !hd.defs.length) return;
+  const { date } = riyadhNow();
+  const due = hd.defs.map((h) => ({ h, st: habitState(h, hd.log, date) })).filter(({ h, st }) => st.count < h.need && !st.today);
+  if (!due.length) return;
+  const row = uiEl('div', 'habits-row');
+  for (const { h, st } of due) {
+    const item = uiEl('div', 'habit-chip');
+    item.append(uiEl('span', 'habit-name', h.name));
+    const dots = uiEl('span', 'dots');
+    for (let i = 0; i < Math.min(h.need, 7); i++) dots.append(uiEl('i', i < st.count ? 'on' : ''));
+    dots.title = `${st.count} من ${h.need} ${h.monthly ? 'هذا الشهر' : 'هذا الأسبوع'}`;
+    const btn = uiEl('button', 'pill sm', 'تم');
+    btn.type = 'button';
+    btn.addEventListener('click', (ev) => { ev.preventDefault(); habitMark(h, btn); });
+    item.append(dots, btn);
+    row.append(item);
+  }
+  body.append(row);
+}
 function renderGoals(body, empty) {
   const { date } = riyadhNow();
   const q = activeQuarter();
@@ -1789,12 +1812,13 @@ function renderTasks() {
     if (items.length) {
       // المربع الصفري لا يُعرض (عدا «عليك»)
       body.append(statTiles([[parts[0][1].length, 'عليك'], [items.filter((x) => itemLate(x)).length, 'متأخر'], [parts[1][1].length, 'متابعة'], [parts[2][1].length, 'عند غيرك']].filter(([n], i) => i === 0 || n > 0)));
+      try { renderTodayHabits(body); } catch (e) { /* السطر اختياري */ }
       for (const [name, list] of parts) {
         if (!list.length) continue;
         const title = name === 'متابعة' ? (list[0].match(/^متابعة ([^:]+):/)?.[0].replace(':', '') || 'متابعة') : name;
         taskGroup(body, title, list, { open: name === 'عليك' });
       }
-    } else empty('لا مهام موعدها اليوم.');
+    } else { try { renderTodayHabits(body); } catch (e) { /* السطر اختياري */ } empty('لا مهام موعدها اليوم.'); }
     const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim()).filter((l) => !demo || !/^إيميلات تواصل/.test(l));
     if (appr.length) { const c = uiEl('div', 'chips foot'); c.append(uiEl('span', 'chip', 'ينتظر اعتمادك: ' + appr.join(' · '))); body.append(c); }
   } else if (tab === 'week') {
