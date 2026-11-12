@@ -1227,38 +1227,71 @@ function brandData() {
 // ما تم، وما لم يتم ولماذا — حتى لا يعتمد الوليد على تيليجرام ليعرف أن تعديلاً رُفض.
 function brandReplies() {
   const out = [];
+  const word = { 'اعتمد': 'اعتُمدت', 'ارفض': 'رُفضت', 'عدّل': 'عُدّلت' };
   for (const n of vault.notes) {
     if (!n.path.startsWith('Inbox/') || n.path.startsWith('Inbox/_') || !n.path.includes('أفكار المحتوى') || !n.text.includes(`kind: ${BIG_KIND}`)) continue;
     const f = (k) => (n.text.match(new RegExp('^' + k + ':\\s*(.+)$', 'm')) || [])[1] || '';
     const status = f('status');
-    const when = f('answered') || f('created');
-    const at = Date.parse(when.replace(' ', 'T') + ':00+03:00');
+    const at = Date.parse((f('answered') || f('created')).replace(' ', 'T') + ':00+03:00');
     if (Number.isFinite(at) && Date.now() - at > 24 * 3600 * 1000) continue;
-    const title = (n.text.match(/^# (.+)$/m) || [])[1] || '';
-    if (status === 'pending' || status === 'working') { out.push({ at: at || Date.now(), title, wait: true, lines: ['⏳ يُنفَّذ الآن على الماك (دقائق).'], bad: 0 }); continue; }
+    // القرارات كما أُرسلت: «- اعتمد | صف 65 | أولها: … [| الملاحظة: …]»
+    const decs = [...n.text.matchAll(/^- (اعتمد|ارفض|عدّل) \| صف (\d+) \| أولها: (.*?)(?: \| الملاحظة: .*)?$/gm)].map((m) => ({ act: m[1], row: +m[2], snip: m[3].trim() }));
+    if (!decs.length) continue;
+    const wait = status === 'pending' || status === 'working';
     const m = n.text.match(/\n## (ردّ نيكست الكبير|فشل التنفيذ)\n([\s\S]*?)(?=\n## |$)/);
-    if (!m) continue;
-    const lines = m[2].split('\n').map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean);
-    const failed = m[1] === 'فشل التنفيذ' || status === 'failed';
-    out.push({ at: at || 0, title, lines, bad: failed ? 1 : lines.filter((l) => l.startsWith('❌')).length });
+    const reply = m ? m[2].split('\n').map((l) => l.replace(/^\s*-\s*/, '').trim()).filter(Boolean) : [];
+    const marks = reply.filter((l) => /^[✅❌]/.test(l));
+    const failedAll = (m && m[1] === 'فشل التنفيذ') || status === 'failed';
+    decs.forEach((d, i) => {
+      // علامة كل قرار من سطره في الرد إن تساوى العددان؛ وإلا فأي ❌ في الرد يجعل قرارات الطلب كلها «تحقق»
+      const mark = marks.length === decs.length ? marks[i] : '';
+      const bad = !wait && (failedAll || (mark ? mark.startsWith('❌') : marks.some((l) => l.startsWith('❌')) || !m));
+      out.push({ at: at || 0, wait, bad, act: d.act, done: word[d.act], row: d.row, snip: d.snip, why: bad ? (mark || reply[0] || 'لا رد واضح من نيكست الكبير.').replace(/^❌\s*/, '') : '', full: bad ? reply : [] });
+    });
   }
   return out.sort((a, b) => b.at - a.at);
 }
+// عرض مختصر: سطر ملخص واحد (اعتماد n · رفض n · تعديل n). ما لم يُنفَّذ يظهر تحته بسطر واحد يُفتح بالضغط لقراءة السبب كاملاً؛
+// وما تم يظهر سطراً قصيراً لكل قرار عند الضغط على الملخص فقط.
 function renderBrandReplies(body) {
   const list = brandReplies();
   if (!list.length) return;
-  const bad = list.reduce((s, x) => s + x.bad, 0);
-  const waiting = list.some((x) => x.wait);
-  const open = bad > 0 || waiting; // ما لم يُنفَّذ أو ما زال يُنفَّذ يظهر مفتوحاً
-  const h = uiEl('div', 'grp fold');
-  const arrow = uiEl('span', 'arrow', open ? ' ▴' : ' ▾');
-  h.append(uiEl('span', '', `ردود نيكست · ${list.length}`), arrow);
-  if (bad) h.append(uiEl('span', 'chip warn', `لم يُنفَّذ ${bad}`));
-  const ul = document.createElement('ul');
-  ul.hidden = !open;
-  for (const x of list) for (const l of x.lines) ul.append(uiEl('li', 'plain reply' + (l.startsWith('❌') ? ' bad' : ''), l));
-  h.addEventListener('click', () => { ul.hidden = !ul.hidden; arrow.textContent = ul.hidden ? ' ▾' : ' ▴'; });
-  body.append(h, ul);
+  const ok = list.filter((x) => !x.bad && !x.wait);
+  const bad = list.filter((x) => x.bad);
+  const waiting = list.filter((x) => x.wait);
+  const c = (a) => ok.filter((x) => x.act === a).length;
+  const sum = [c('اعتمد') && `اعتماد ${c('اعتمد')}`, c('ارفض') && `رفض ${c('ارفض')}`, c('عدّل') && `تعديل ${c('عدّل')}`].filter(Boolean).join(' · ');
+  const h = uiEl('div', 'grp fold replies');
+  h.append(uiEl('span', '', 'آخر 24 ساعة' + (sum ? ': ' + sum + ' ✓' : '')));
+  if (waiting.length) h.append(uiEl('span', 'chip', `يُنفَّذ الآن ${waiting.length}`));
+  if (bad.length) h.append(uiEl('span', 'chip warn', `لم يُنفَّذ ${bad.length}`));
+  const arrow = uiEl('span', 'arrow', ok.length ? ' ▾' : '');
+  h.append(arrow);
+  body.append(h);
+  const short = (x) => `صف ${x.row} · ${clip(x.snip, 38)}`;
+  if (bad.length) {
+    const ul = document.createElement('ul');
+    for (const x of bad) {
+      const li = uiEl('li', 'row plain reply bad');
+      const main = uiEl('div', 'main');
+      main.append(uiEl('div', 't', `✕ لم ${x.act === 'اعتمد' ? 'تُعتمد' : x.act === 'ارفض' ? 'تُرفض' : 'تُعدَّل'} · ${short(x)}`));
+      const more = uiEl('div', 'meta-sm', x.full.join('\n'));
+      more.hidden = true; more.style.whiteSpace = 'pre-wrap';
+      main.append(uiEl('div', 'meta-sm why', x.why), more);
+      li.append(main);
+      li.style.cursor = 'pointer';
+      li.addEventListener('click', () => { more.hidden = !more.hidden; li.classList.toggle('open', !more.hidden); });
+      ul.append(li);
+    }
+    body.append(ul);
+  }
+  if (ok.length) {
+    const ul = document.createElement('ul');
+    ul.hidden = true;
+    for (const x of ok) ul.append(uiEl('li', 'plain reply', `✓ ${x.done} · ${short(x)}`));
+    h.addEventListener('click', () => { ul.hidden = !ul.hidden; arrow.textContent = ul.hidden ? ' ▾' : ' ▴'; });
+    body.append(ul);
+  } else h.style.cursor = 'default';
 }
 function brandCount() { try { return brandData()?.ideas.length || 0; } catch { return 0; } }
 function brandRequest(list) { // list: [{ idea, act, note }]

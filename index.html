@@ -142,8 +142,11 @@
   .tasks .chip.warn, .tasks .chip.old { color: var(--warn); border-color: var(--warn); }
   .tasks .chip.ok { color: var(--ok); border-color: var(--ok); }
   .tasks li.idea { align-items: flex-start; padding: 10px 2px; }
-  .tasks li.reply { font-size: 13px; line-height: 1.6; color: var(--muted); }
-  .tasks li.reply.bad { color: var(--fg); }
+  .tasks li.reply { font-size: 12px; line-height: 1.5; color: var(--muted); padding: 5px 2px; }
+  .tasks li.reply.bad { color: var(--fg); font-size: 13px; padding: 8px 2px; }
+  .tasks li.reply.bad .why { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tasks li.reply.bad.open .why { display: none; }
+  .tasks .grp.replies { margin-top: 4px; }
   .tasks .sendbar { margin: 4px 0 8px; position: sticky; top: 44px; background: var(--card); z-index: 1; padding: 6px 0; }
   .tasks .pill.go { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--pink), var(--indigo)); }
   .tasks .grp.fold .chip { margin-inline-start: 8px; }
@@ -328,6 +331,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261112l"></script>
+<script type="module" src="app.js?v=20261112m"></script>
 </body>
 </html>
