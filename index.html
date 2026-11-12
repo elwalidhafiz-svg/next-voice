@@ -105,7 +105,12 @@
   .tasks .head { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; padding: 10px 0; font-size: 14px; font-weight: 500; display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--fg); }
   .tasks .head .hint-sm { font-size: 12px; color: var(--muted); font-weight: 400; }
   .tasks .head .chev { transition: transform .2s; color: var(--muted); }
-  .tasks.open .head { border-bottom: 1px solid var(--line); }
+  .tasks .headrow { display: flex; align-items: center; gap: 8px; }
+  .tasks .headrow .head { flex: 1; width: auto; min-width: 0; }
+  .tasks.open .headrow { border-bottom: 1px solid var(--line); }
+  .tasks .eyebtn { flex: none; padding: 3px 9px; font-size: 14px; line-height: 1.2; opacity: .55; }
+  .tasks .eyebtn.on { opacity: 1; border-color: var(--pink); }
+  .tasks:not(.open) .eyebtn { display: none; }
   .tasks.open .head .chev { transform: rotate(180deg); }
   .tasks:not(.open) #tasksBody { display: none; }
   .tasks .grp { font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
@@ -245,7 +250,7 @@
   </div>
 
   <section class="tasks" id="tasksPanel" hidden>
-    <button class="head" type="button" id="tasksHead" aria-expanded="false" aria-controls="tasksBody"><span id="tasksTitle">لوحتي</span><span class="hint-sm"><span id="tasksHint">اضغط للفتح</span> <span class="chev">▾</span></span></button>
+    <div class="headrow"><button class="head" type="button" id="tasksHead" aria-expanded="false" aria-controls="tasksBody"><span id="tasksTitle">لوحتي</span><span class="hint-sm"><span id="tasksHint">اضغط للفتح</span> <span class="chev">▾</span></span></button><button class="pill sm eyebtn" type="button" id="eyeBtn" aria-label="وضع العرض: إظهار أو إخفاء" aria-pressed="false">👁</button></div>
     <div id="tasksBody"></div>
   </section>
 
@@ -317,6 +322,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261112f"></script>
+<script type="module" src="app.js?v=20261112g"></script>
 </body>
 </html>

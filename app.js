@@ -22,6 +22,9 @@ const VOICES = [
 // Pending Approvals وToday Board: نسختان تلقائيتان من سكربت الماك (اعتمادات الشيتين، ولوحة اليوم من Open Loops وواتساب)
 const CORE_FILES = ['_System/Voice Assistant.md', '_System/identity.md', '_System/soul.md', '_System/user.md', '_System/Pending Approvals.md', '_System/Today Board.md'];
 const OPEN_LOOPS = '_System/Open Loops.md';
+// وضع العرض: التطبيق قد يُعرض على الناس، فعند كل فتح (وبعد كل قفل) تُخفى المبالغ، وتبويب «الفرص» وبنود البحث عن فرص، وسطر التكلفة.
+// زر العين في رأس اللوحة يكشفها لهذه الجلسة فقط (لا يُحفظ). moneyShown = true معناه «مكشوف».
+let moneyShown = false;
 
 // ---------- تخزين محلي دائم ----------
 // iOS قد يمسح localStorage أو يمنعه، فتُحفظ الإعدادات في ثلاثة أماكن وتُستعاد من أيها بقي:
@@ -199,6 +202,7 @@ async function unlock() {
 function lockNow() {
   if (!lockEnabled()) return;
   lock.locked = true;
+  moneyShown = false; // القفل يعيد وضع العرض
   if (store.get('lock.mode') === 'prf') { memory.delete('key'); memory.delete('token'); lock.aesKey = null; }
   try { document.getElementById('settings').close(); } catch {}
   document.getElementById('lockScreen').hidden = false;
@@ -731,7 +735,7 @@ function panelList(items, opts = {}) {
     const text = x.replace(/^عليك:\s*/, '').replace(/^متابعة يومية — ([^:]+):\s*(بند واحد، هو |\S+ بنود؛ )?/, 'متابعة $1: ').replace(/^متابعة (?!يومية)[^:]+:\s*/, opts.kind ? '$&' : '').split(' ← ')[0].replace(/ — [^—]*$/, '');
     const main = document.createElement('div');
     main.className = 'main';
-    main.append(uiEl('div', 't', text));
+    main.append(uiEl('div', 't', maskItem(text)));
     const chips = uiEl('div', 'chips');
     const proj = projectOf(x);
     if (proj) chips.append(uiEl('span', 'chip', proj));
@@ -749,7 +753,7 @@ function panelList(items, opts = {}) {
     const bits = [];
     if (late && info && info.due) bits.push('كان موعده ' + info.due.replace(/^متأخر منذ /, ''));
     const src = x.split(' ← ')[1];
-    if (src) bits.push('من: ' + src);
+    if (src) bits.push('من: ' + maskItem(src));
     if (bits.length) more.append(uiEl('div', 'meta-sm', bits.join(' · ')));
     const row = uiEl('div', 'choice');
     more.append(row);
@@ -1252,9 +1256,22 @@ function goalsPending() { // عادات لم تكتمل لفترتها ولم ت
 }
 // خصوصية الأرقام: التطبيق قد يُعرض على الناس، فأرقام الهدف (الدخل) والمبالغ مخفية افتراضياً عند كل فتح.
 // زر «إظهار الأرقام» يكشفها لهذه الجلسة فقط (لا يُحفظ)، وزر «إخفاء» يعيدها.
-let moneyShown = false;
 const maskNums = (x) => (moneyShown ? x : (x || '').replace(/\d[\d,.]*/g, '•••'));
 const maskMoney = (x) => (moneyShown ? x : (x || '').replace(/\d[\d,.]*(?=\s*(ر\.س|ريال|دولار|\$|SAR|USD))/g, '•••'));
+// بند فيه مبلغ بعملة: تُخفى مبالغه، ومعها أي رقم آخر من ثلاث خانات فأكثر في البند نفسه (مبلغ بلا عملة غالباً). غيره يبقى كما هو.
+const MONEY_RE = /\d[\d,.]*(?=\s*(ر\.س|ريال|دولار|\$|SAR|USD))/;
+const maskItem = (x) => (moneyShown || !MONEY_RE.test(x || '') ? x : maskMoney(x).replace(/\d{1,3}(?:,\d{3})+|\d{3,}/g, '•••'));
+// بنود البحث عن فرص (سرّي): لا تُعرض في وضع العرض، بنص البند أو باسم مشروعه
+const SECRET_RE = /البحث عن فرص|فرص جديدة|وظيف|السيرة الذاتية|مقابلة عمل/;
+function demoFilter(list) {
+  if (moneyShown) return list;
+  return list.filter((x) => { if (SECRET_RE.test(x)) return false; try { return !SECRET_RE.test(projectOf(x)); } catch { return true; } });
+}
+function applyDemoChrome() { // زر العين وسطر التكلفة
+  const eye = document.getElementById('eyeBtn');
+  if (eye) { eye.classList.toggle('on', moneyShown); eye.setAttribute('aria-pressed', String(moneyShown)); }
+  try { ui.cost.style.visibility = !moneyShown && settings().tasksPanel !== 'off' ? 'hidden' : ''; } catch { /* قبل تهيئة الواجهة */ }
+}
 const firstNum = (x) => { const m = (x || '').match(/\d[\d,]*(?:\.\d+)?/); return m ? { text: m[0], val: parseFloat(m[0].replace(/,/g, '')) } : null; };
 // عرض مبسّط: عنوان قصير + الرقم الآن من المستهدف + شريط، والتفاصيل الكاملة تظهر بالضغط. العادة: اسم ونقاط بعدد المطلوب وزر.
 function renderGoals(body, empty) {
@@ -1265,15 +1282,11 @@ function renderGoals(body, empty) {
   if (!q) empty('لا ربع نشطاً في Strategy/ (ملف type: quarter وstatus: active).');
   else {
     const left = q.end ? Math.round((Date.parse(q.end) - Date.parse(date)) / 864e5) : null;
-    const qh = head('هدف الربع' + (left != null && left >= 0 ? ` · باقٍ ${left} يوماً` : left != null ? ' · انتهت مدته' : ''));
-    const eye = el('button', 'pill sm eye', moneyShown ? 'إخفاء الأرقام' : 'إظهار الأرقام');
-    eye.type = 'button';
-    eye.addEventListener('click', (ev) => { ev.preventDefault(); moneyShown = !moneyShown; renderTasks(); });
-    qh.append(eye);
-    for (const g of q.goals) {
+    head('هدف الربع' + (left != null && left >= 0 ? ` · باقٍ ${left} يوماً` : left != null ? ' · انتهت مدته' : ''));
+    q.goals.forEach((g, gi) => {
       const card = el('div', 'goal');
       const short = g.goal.split(/\s*[(،]/)[0].trim() || g.goal;
-      card.append(el('div', 'goal-title', maskNums(short)));
+      card.append(el('div', 'goal-title', moneyShown ? short : `الهدف ${gi + 1}`)); // نص الهدف قد يكشف ما لا يُعرض
       const now = firstNum(g.now), target = firstNum(g.target);
       if (now && target && target.val > 0) {
         const nums = el('div', 'goal-nums');
@@ -1289,10 +1302,10 @@ function renderGoals(body, empty) {
       } else if (g.now || g.target) card.append(el('div', 'meta-sm', maskNums([g.now && `الآن ${g.now}`, g.target && `المستهدف ${g.target}`].filter(Boolean).join(' · '))));
       const more = el('div', 'meta-sm', maskNums([g.goal !== short ? g.goal : '', g.start && `البداية: ${g.start}`, g.state && `الحالة: ${g.state}`].filter(Boolean).join(' · ')));
       more.hidden = true;
-      card.append(more);
-      card.addEventListener('click', () => { more.hidden = !more.hidden; });
+      if (moneyShown) card.append(more);
+      if (moneyShown) card.addEventListener('click', () => { more.hidden = !more.hidden; }); else card.style.cursor = 'default';
       body.append(card);
-    }
+    });
     if (!q.goals.length) empty('لا أهداف مكتوبة في ملف الربع.');
   }
   const hd = habitsData();
@@ -1327,16 +1340,20 @@ function renderTasks() {
   const box = document.getElementById('tasksPanel');
   if (!box) return;
   if (settings().tasksPanel === 'off' || lock.locked || !vault.byPath.size) { box.hidden = true; return; }
-  const items = myTasks();
-  const week = boardItems('مفتوح الآن — قادم').filter(withinWeek);
-  const props = boardItems('مقترحات للـ Open Loops (تنتظر قرارك)');
-  panel.items = items;
-  const tab = panel.tab || 'today';
+  const allItems = myTasks();
+  panel.items = allItems; // للمكالمة: القائمة كاملة
+  const demo = !moneyShown;
+  const items = demoFilter(allItems);
+  const week = demoFilter(boardItems('مفتوح الآن — قادم').filter(withinWeek));
+  const props = demoFilter(boardItems('مقترحات للـ Open Loops (تنتظر قرارك)'));
+  applyDemoChrome();
+  const tab = demo && panel.tab === 'opps' ? 'today' : (panel.tab || 'today');
   const body = document.getElementById('tasksBody');
   body.replaceChildren();
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
   for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['opps', 'الفرص', oppsCount()], ['goals', 'أهدافي', goalsPending()]]) {
+    if (demo && key === 'opps') continue;
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tab' + (key === tab ? ' on' : '');
@@ -1364,7 +1381,7 @@ function renderTasks() {
         taskGroup(body, title, list, { open: name === 'عليك' });
       }
     } else empty('لا مهام موعدها اليوم.');
-    const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim());
+    const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim()).filter((l) => !demo || !/^إيميلات تواصل/.test(l));
     if (appr.length) { const c = uiEl('div', 'chips foot'); c.append(uiEl('span', 'chip', 'ينتظر اعتمادك: ' + appr.join(' · '))); body.append(c); }
   } else if (tab === 'week') {
     if (week.length) {
@@ -1384,7 +1401,7 @@ function renderTasks() {
       body.append(panelList(props, { kind: 'proposal' }));
     } else empty('لا مقترحات تنتظر قرارك.');
   }
-  const oppsN = oppsCount();
+  const oppsN = demo ? 0 : oppsCount();
   document.getElementById('tasksTitle').textContent = ['لوحتي', `اليوم ${items.length}`, oppsN ? `الفرص ${oppsN}` : ''].filter(Boolean).join(' · ');
   box.hidden = false;
 }
@@ -2489,6 +2506,7 @@ function renderUsage() {
   // تقدير أعلى: كل دقيقة مكالمة = دقيقة إدخال + دقيقة إخراج
   const cost = m * (COST_IN_PER_MIN + COST_OUT_PER_MIN);
   ui.cost.textContent = `هذا الشهر: ${Math.round(m)} د ≈ ${cost.toFixed(2)}$ (حد أعلى)`;
+  applyDemoChrome();
 }
 
 // ---------- الأحداث ----------
@@ -2784,6 +2802,7 @@ function setTasksOpen(open) {
 }
 setTasksOpen(store.get('tasksOpen', 'off') === 'on');
 $('tasksHead').addEventListener('click', () => setTasksOpen(!$('tasksPanel').classList.contains('open')));
+$('eyeBtn').addEventListener('click', () => { moneyShown = !moneyShown; applyDemoChrome(); renderTasks(); });
 function showChatToggle() {
   const on = settings().chat !== 'off';
   $('chatToggle').textContent = on ? 'مفعّلة — اكتب له دون اتصال' : 'مُطفأة — الكتابة أثناء المكالمة فقط';
