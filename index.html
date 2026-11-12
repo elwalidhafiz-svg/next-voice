@@ -76,7 +76,7 @@
     background: radial-gradient(circle at 35% 30%, #ff7ab0 0%, var(--pink) 35%, var(--indigo) 100%);
     box-shadow: 0 0 calc(30px + var(--lvl, 0) * 70px) rgba(255, 61, 139, calc(.25 + var(--lvl, 0) * .5));
     transform: scale(calc(1 + var(--lvl, 0) * .08));
-    transition: transform .08s linear, box-shadow .08s linear, filter .2s;
+    transition: transform .08s linear, box-shadow .08s linear, filter .2s, width .2s, height .2s;
     font: 700 19px "IBM Plex Sans Arabic", sans-serif;
   }
   .orb.idle { filter: saturate(.55) brightness(.8); }
@@ -115,6 +115,11 @@
   .tasks:not(.open) #tasksBody { display: none; }
   .tasks .grp { font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   #tasksBody { max-height: 42vh; overflow-y: auto; }
+  /* اللوحة مفتوحة وخارج المكالمة (الزر idle): يصغر زر «اتصل» وتأخذ اللوحة ما بقي من الشاشة. عند الطي أو بدء المكالمة يعود كل شيء كما كان. */
+  .app:has(.tasks.open:not([hidden])):has(.orb.idle) .stage { padding: 6px 0 2px; }
+  .app:has(.tasks.open:not([hidden])):has(.orb.idle) .orb { width: 88px; height: 88px; font-size: 15px; }
+  .app:has(.tasks.open:not([hidden])):has(.orb.idle) .meta { margin-top: 6px; font-size: 12px; }
+  .app:has(.orb.idle) .tasks.open #tasksBody { max-height: max(42vh, calc(100dvh - 400px)); }
   .tasks ul { list-style: none; margin: 0; padding: 0; }
   .tasks li { padding: 8px 2px; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.5; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
   .tasks li:last-child { border-bottom: 0; }
@@ -331,6 +336,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261112m"></script>
+<script type="module" src="app.js?v=20261112n"></script>
 </body>
 </html>
