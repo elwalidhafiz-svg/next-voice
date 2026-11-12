@@ -775,12 +775,13 @@ function oppsBoard() {
 function oppsApplied() { try { return JSON.parse(store.get('opps.applied') || '{}'); } catch { return {}; } }
 const oppsIsApply = (sec) => sec.title.startsWith('قدّم');
 const oppsReal = (lines) => lines.filter((l) => l && l !== 'لا شيء');
+function oppsBadLinks() { try { return JSON.parse(store.get('opps.badlink') || '{}'); } catch { return {}; } }
 function oppsApplyItems(sec) {
-  const done = oppsApplied();
+  const done = oppsApplied(), bad = oppsBadLinks(); // المبلَّغ عن رابطه يختفي حتى يتغير رابطه في اللوحة
   return oppsReal(sec.lines).map((l) => {
     const [id = '', company = '', role = '', score = '', url = ''] = l.split(' | ').map((x) => x.trim());
     return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '' };
-  }).filter((x) => x.id && !done[x.id]);
+  }).filter((x) => x.id && !done[x.id] && bad[x.id] !== (x.url || '-'));
 }
 function oppsCount() { // ما يحتاج فعلاً منه في هذا التبويب: رسائل تنتظر اعتماده + إعلانات لم يقدّم عليها
   let n = 0;
@@ -826,6 +827,28 @@ async function oppsMarkApplied(x, btn) {
       kind: BIG_KIND, type: 'فعل',
     });
     const done = oppsApplied(); done[x.id] = date; store.set('opps.applied', JSON.stringify(done));
+    renderTasks();
+  } catch (e) {
+    btn.dataset.step = ''; btn.disabled = false; btn.classList.remove('on'); btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
+// زر «الرابط لا يعمل»: بضغطتين يطلب من نيكست الكبير رابطاً يعمل للوظيفة نفسها (يكتبه في E)، وإن لم يجد يجعل الفرصة «متخطّى».
+// الإعلان يختفي من القائمة ما دام رابطه في اللوحة هو الرابط المبلَّغ عنه؛ إن صُحّح الرابط عاد للظهور مع تحديث اللوحة.
+async function oppsBadLink(x, btn) {
+  if (btn.dataset.step !== 'confirm') {
+    btn.dataset.step = 'confirm'; btn.textContent = 'تأكيد: لا يعمل؟'; btn.classList.add('on');
+    setTimeout(() => { if (btn.isConnected && btn.dataset.step === 'confirm') { btn.dataset.step = ''; btn.textContent = 'الرابط لا يعمل'; btn.classList.remove('on'); } }, 5000);
+    return;
+  }
+  btn.dataset.step = 'sending'; btn.disabled = true; btn.textContent = 'يُبلَّغ…';
+  const { date } = riyadhNow();
+  try {
+    await addToInbox({
+      title: `رابط لا يعمل ${x.id} ${x.company}`.slice(0, 60),
+      content: `الوليد ضغط «الرابط لا يعمل» (وأكّد) على ${x.id} (${x.company} — ${x.role}) يوم ${date}. الرابط المسجّل: ${x.url || 'لا رابط'}\nفي شيت البحث عن فرص جديدة (${OPPS_SHEET})، تبويب «الفرص»، صف هذا المعرّف فقط:\n1) ابحث عن صفحة الوظيفة نفسها (المسمى + الشركة + الرياض) في صفحة توظيف الشركة أو لوحة ATS أو لينكدإن، وافتحها للتأكد أنها تعمل وفيها زر التقديم.\n2) إن وجدت رابطاً يعمل: اكتبه في العمود E، وأضف في آخر T «صُحّح الرابط ${date}: <من أين>» دون مسح ما فيه.\n3) إن لم تجد، أو الإعلان مغلق: اكتب في M «متخطّى»، وأضف في آخر T «رابط لا يعمل ${date}: <السبب>» دون مسح ما فيه.\nلا تغيّر أي عمود آخر ولا أي صف آخر، ولا تكتب في K ولا S، ولا تخمّن رابطاً. إن لم تجد المعرّف، أو لم تسمح تعليماتك بهذه الكتابة، فلا تكتب شيئاً وأبلغه.`,
+      kind: BIG_KIND, type: 'فعل',
+    });
+    const bad = oppsBadLinks(); bad[x.id] = x.url || '-'; store.set('opps.badlink', JSON.stringify(bad));
     renderTasks();
   } catch (e) {
     btn.dataset.step = ''; btn.disabled = false; btn.classList.remove('on'); btn.textContent = 'تعذّر — أعد المحاولة';
@@ -1054,6 +1077,10 @@ function renderOpps(body, empty) {
           }
         }
         row.append(btn);
+        const badBtn = document.createElement('button');
+        badBtn.type = 'button'; badBtn.className = 'pill sm'; badBtn.textContent = 'الرابط لا يعمل';
+        badBtn.addEventListener('click', (ev) => { ev.preventDefault(); oppsBadLink(x, badBtn); });
+        row.append(badBtn);
         main.append(meta, row);
         if (others) main.append(others);
         li.append(main);
@@ -1139,30 +1166,37 @@ function goalsPending() { // عادات لم تكتمل لفترتها ولم ت
     return hd.defs.filter((h) => { const st = habitState(h, hd.log, date); return st.count < h.need && !st.today; }).length;
   } catch { return 0; }
 }
+const firstNum = (x) => { const m = (x || '').match(/\d[\d,]*(?:\.\d+)?/); return m ? { text: m[0], val: parseFloat(m[0].replace(/,/g, '')) } : null; };
+// عرض مبسّط: عنوان قصير + الرقم الآن من المستهدف + شريط، والتفاصيل الكاملة تظهر بالضغط. العادة: اسم ونقاط بعدد المطلوب وزر.
 function renderGoals(body, empty) {
   const { date } = riyadhNow();
   const q = activeQuarter();
   const head = (t) => { const h = document.createElement('div'); h.className = 'grp'; h.textContent = t; body.append(h); };
+  const el = (tag, cls, text) => { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; };
   if (!q) empty('لا ربع نشطاً في Strategy/ (ملف type: quarter وstatus: active).');
   else {
     const left = q.end ? Math.round((Date.parse(q.end) - Date.parse(date)) / 864e5) : null;
     head('هدف الربع' + (left != null && left >= 0 ? ` · باقٍ ${left} يوماً` : left != null ? ' · انتهت مدته' : ''));
-    const ul = document.createElement('ul');
     for (const g of q.goals) {
-      const li = document.createElement('li');
-      li.className = 'plain';
-      const main = document.createElement('div');
-      main.className = 'main';
-      main.append(document.createTextNode(g.goal));
-      const meta = document.createElement('div');
-      meta.className = 'meta-sm';
-      meta.textContent = [g.now && `الآن ${g.now}`, g.target && `المستهدف ${g.target}`, g.start && `البداية ${g.start}`].filter(Boolean).join(' · ');
-      main.append(meta);
-      li.append(main);
-      if (g.state) { const s = document.createElement('span'); s.className = 'late'; s.textContent = g.state; li.append(s); }
-      ul.append(li);
+      const card = el('div', 'goal');
+      const short = g.goal.split(/\s*[(،]/)[0].trim() || g.goal;
+      card.append(el('div', 'goal-title', short));
+      const now = firstNum(g.now), target = firstNum(g.target);
+      if (now && target && target.val > 0) {
+        const nums = el('div', 'goal-nums');
+        nums.append(el('span', 'goal-now', now.text), el('span', 'goal-of', ` من ${g.target}`));
+        const bar = el('div', 'goal-bar'), fill = el('div', 'goal-fill');
+        fill.style.width = Math.max(2, Math.min(100, Math.round((now.val / target.val) * 100))) + '%';
+        bar.append(fill);
+        card.append(nums, bar);
+      } else if (g.now || g.target) card.append(el('div', 'meta-sm', [g.now && `الآن ${g.now}`, g.target && `المستهدف ${g.target}`].filter(Boolean).join(' · ')));
+      const more = el('div', 'meta-sm', [g.goal !== short ? g.goal : '', g.start && `البداية: ${g.start}`, g.state && `الحالة: ${g.state}`].filter(Boolean).join(' · '));
+      more.hidden = true;
+      card.append(more);
+      card.addEventListener('click', () => { more.hidden = !more.hidden; });
+      body.append(card);
     }
-    if (q.goals.length) body.append(ul); else empty('لا أهداف مكتوبة في ملف الربع.');
+    if (!q.goals.length) empty('لا أهداف مكتوبة في ملف الربع.');
   }
   const hd = habitsData();
   head('العادات');
@@ -1170,23 +1204,24 @@ function renderGoals(body, empty) {
   const ul = document.createElement('ul');
   for (const h of hd.defs) {
     const st = habitState(h, hd.log, date);
-    const li = document.createElement('li');
-    li.className = 'plain';
-    const main = document.createElement('div');
-    main.className = 'main';
-    main.append(document.createTextNode(h.name));
-    const meta = document.createElement('div');
-    meta.className = 'meta-sm';
-    meta.textContent = [`${st.count} من ${h.need} ${h.monthly ? 'هذا الشهر' : 'هذا الأسبوع'}`, h.desc].filter(Boolean).join(' · ');
-    main.append(meta);
+    const li = el('li', 'plain habit');
+    const main = el('div', 'main');
+    main.append(el('span', 'habit-name', h.name));
+    const dots = el('span', 'dots');
+    const n = Math.max(h.need, st.count);
+    for (let i = 0; i < Math.min(n, 7); i++) dots.append(el('i', i < st.count ? 'on' : ''));
+    dots.title = `${st.count} من ${h.need} ${h.monthly ? 'هذا الشهر' : 'هذا الأسبوع'}`;
+    main.append(dots);
+    const desc = el('div', 'meta-sm', [dots.title, h.desc].filter(Boolean).join(' · '));
+    desc.hidden = true;
+    main.append(desc);
+    main.addEventListener('click', () => { desc.hidden = !desc.hidden; });
     li.append(main);
-    const btn = document.createElement('button');
-    btn.type = 'button'; btn.className = 'pill sm xbtn';
-    btn.textContent = st.today ? '✓ سُجّل اليوم' : 'تم';
+    const btn = el('button', 'pill sm xbtn' + (st.today ? ' done' : ''), st.today ? '✓' : 'تم');
+    btn.type = 'button';
     btn.disabled = st.today;
-    btn.addEventListener('click', (ev) => { ev.preventDefault(); habitMark(h, btn); });
+    btn.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); habitMark(h, btn); });
     li.append(btn);
-    if (st.count >= h.need) li.classList.add('said');
     ul.append(li);
   }
   body.append(ul);
