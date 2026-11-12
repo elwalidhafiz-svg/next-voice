@@ -1080,6 +1080,7 @@ function oppsRefreshRow(body, updated) { // سطر واحد: «آخر تحديث
 function uiEl(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
 function statTiles(list) {
   const row = uiEl('div', 'stats');
+  if (!list.length) row.hidden = true;
   for (const [n, label] of list) { const t = uiEl('div', 'stat'); t.append(uiEl('b', '', String(n)), uiEl('span', '', label)); row.append(t); }
   return row;
 }
@@ -1355,7 +1356,8 @@ function renderTasks() {
       parts.push([name, list]);
     }
     if (items.length) {
-      body.append(statTiles([[parts[0][1].length, 'عليك'], [items.filter((x) => itemLate(x)).length, 'متأخر'], [parts[1][1].length, 'متابعة'], [parts[2][1].length, 'عند غيرك']]));
+      // المربع الصفري لا يُعرض (عدا «عليك»)
+      body.append(statTiles([[parts[0][1].length, 'عليك'], [items.filter((x) => itemLate(x)).length, 'متأخر'], [parts[1][1].length, 'متابعة'], [parts[2][1].length, 'عند غيرك']].filter(([n], i) => i === 0 || n > 0)));
       for (const [name, list] of parts) {
         if (!list.length) continue;
         const title = name === 'متابعة' ? (list[0].match(/^متابعة ([^:]+):/)?.[0].replace(':', '') || 'متابعة') : name;
@@ -1366,7 +1368,8 @@ function renderTasks() {
     if (appr.length) { const c = uiEl('div', 'chips foot'); c.append(uiEl('span', 'chip', 'ينتظر اعتمادك: ' + appr.join(' · '))); body.append(c); }
   } else if (tab === 'week') {
     if (week.length) {
-      body.append(statTiles([[week.length, 'هذا الأسبوع'], [week.filter((x) => dueInfo(x.split(' ← ')[0])?.days === -1).length, 'غداً']]));
+      const tomorrow = week.filter((x) => dueInfo(x.split(' ← ')[0])?.days === -1).length;
+      if (tomorrow) body.append(statTiles([[week.length, 'هذا الأسبوع'], [tomorrow, 'غداً']])); // مربع واحد يكرر رقم التبويب: لا يُعرض
       body.append(panelList(week, { kind: 'week' }));
     } else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
   } else if (tab === 'opps') {
@@ -1377,7 +1380,7 @@ function renderTasks() {
     if (props.length) {
       let old = 0;
       for (const x of props) { try { const a = proposalAge(x); if (a != null && a >= PROPOSAL_OLD_DAYS) old++; } catch { /* اختياري */ } }
-      body.append(statTiles([[props.length, 'مقترحات'], [old, 'قديمة']]));
+      if (old) body.append(statTiles([[props.length, 'مقترحات'], [old, 'قديمة']])); // مربع واحد يكرر رقم التبويب: لا يُعرض
       body.append(panelList(props, { kind: 'proposal' }));
     } else empty('لا مقترحات تنتظر قرارك.');
   }

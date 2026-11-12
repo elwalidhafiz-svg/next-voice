@@ -126,10 +126,11 @@
   .tasks .stat b { display: block; font-size: 22px; font-weight: 700; line-height: 1.2; }
   .tasks .stat span { font-size: 11px; color: var(--muted); }
   .tasks .grp.fold { cursor: pointer; padding: 6px 0; }
-  .tasks li.row { align-items: center; padding: 10px 2px; }
+  .tasks li.row { align-items: center; padding: 8px 2px; }
   .tasks li.row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tasks li.row.open .t { white-space: normal; overflow: visible; }
   .tasks li.row .xbtn { align-self: center; }
+  .tasks li.row.open .xbtn { align-self: flex-start; }
   .tasks .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
   .tasks .chips.foot { margin: 10px 0 12px; }
   .tasks .chip { font-size: 11px; line-height: 1.4; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
@@ -316,6 +317,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261112e"></script>
+<script type="module" src="app.js?v=20261112f"></script>
 </body>
 </html>
