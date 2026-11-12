@@ -1704,8 +1704,11 @@ function projectGroups() {
   return [...map.entries()].map(([name, items]) => ({ name, items, late: items.filter((x) => itemLate(x)).length }))
     .sort((a, b) => (b.late - a.late) || (b.items.length - a.items.length));
 }
-function projectsCount(demo) { // ما ينتظره في البراند والفرص فقط؛ المتأخر في المشاريع محسوب في «اليوم»
-  return brandCount() + (demo ? 0 : oppsCount());
+function projectsCount(demo) { // عدد البطاقات التي فيها ما ينتظره (البراند، الفرص)؛ المتأخر في المشاريع محسوب في «اليوم»
+  let n = 0;
+  try { if (brandCount() > 0) n++; } catch { /* اختياري */ }
+  try { if (!demo && oppsCount() > 0) n++; } catch { /* اختياري */ }
+  return n;
 }
 function renderProjects(body, empty, demo) {
   if (demo && panel.sub === 'opps') panel.sub = '';
