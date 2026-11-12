@@ -1636,7 +1636,7 @@ function renderTasks() {
   } else if (tab === 'week') {
     if (week.length) {
       const tomorrow = week.filter((x) => dueInfo(x.split(' ← ')[0])?.days === -1).length;
-      if (tomorrow) body.append(statTiles([[week.length, 'هذا الأسبوع'], [tomorrow, 'غداً']])); // مربع واحد يكرر رقم التبويب: لا يُعرض
+      body.append(statTiles([[week.length, 'هذا الأسبوع'], [tomorrow, 'غداً']].filter(([n], i) => i === 0 || n > 0))); // المربع الأول يبقى دائماً (نظرة سريعة)، والصفري بعده لا يُعرض
       body.append(panelList(week, { kind: 'week' }));
     } else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
   } else if (tab === 'opps') {
@@ -1649,7 +1649,7 @@ function renderTasks() {
     if (props.length) {
       let old = 0;
       for (const x of props) { try { const a = proposalAge(x); if (a != null && a >= PROPOSAL_OLD_DAYS) old++; } catch { /* اختياري */ } }
-      if (old) body.append(statTiles([[props.length, 'مقترحات'], [old, 'قديمة']])); // مربع واحد يكرر رقم التبويب: لا يُعرض
+      body.append(statTiles([[props.length, 'مقترحات'], [old, 'قديمة']].filter(([n], i) => i === 0 || n > 0)));
       body.append(panelList(props, { kind: 'proposal' }));
     } else empty('لا مقترحات تنتظر قرارك.');
   }
