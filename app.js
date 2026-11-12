@@ -1785,12 +1785,13 @@ function renderTasks() {
   applyDemoChrome();
   // التبويبان القديمان («الفرص» و«البراند») صارا لوحتين داخل «مشاريعي»
   if (panel.tab === 'opps' || panel.tab === 'brand') { panel.sub = panel.tab; panel.tab = 'projects'; }
+  if (panel.tab === 'week' || panel.tab === 'props') panel.tab = 'upcoming'; // دُمجا في «القادم»
   const tab = panel.tab || 'today';
   const body = document.getElementById('tasksBody');
   body.replaceChildren();
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
-  for (const [key, label, n] of [['today', 'اليوم', items.length], ['week', 'الأسبوع', week.length], ['props', 'مقترحات', props.length], ['projects', 'مشاريعي', projectsCount(demo)], ['goals', 'أهدافي', goalsPending()]]) {
+  for (const [key, label, n] of [['today', 'اليوم', items.length], ['upcoming', 'القادم', week.length + props.length], ['projects', 'مشاريعي', projectsCount(demo)], ['goals', 'أهدافي', goalsPending()]]) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'tab' + (key === tab ? ' on' : '');
@@ -1821,12 +1822,24 @@ function renderTasks() {
     } else { try { renderTodayHabits(body); } catch (e) { /* السطر اختياري */ } empty('لا مهام موعدها اليوم.'); }
     const appr = boardSection('اعتمادات معلّقة').split('\n').filter((l) => l.startsWith('- ') && !/:\s*0\s*$/.test(l)).map((l) => l.slice(2).trim()).filter((l) => !demo || !/^إيميلات تواصل/.test(l));
     if (appr.length) { const c = uiEl('div', 'chips foot'); c.append(uiEl('span', 'chip', 'ينتظر اعتمادك: ' + appr.join(' · '))); body.append(c); }
-  } else if (tab === 'week') {
-    if (week.length) {
-      const tomorrow = week.filter((x) => dueInfo(x.split(' ← ')[0])?.days === -1).length;
-      body.append(statTiles([[week.length, 'هذا الأسبوع'], [tomorrow, 'غداً']].filter(([n], i) => i === 0 || n > 0))); // المربع الأول يبقى دائماً (نظرة سريعة)، والصفري بعده لا يُعرض
-      body.append(panelList(week, { kind: 'week' }));
-    } else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
+  } else if (tab === 'upcoming') {
+    let old = 0;
+    for (const x of props) { try { const a = proposalAge(x); if (a != null && a >= PROPOSAL_OLD_DAYS) old++; } catch { /* اختياري */ } }
+    const tomorrow = week.filter((x) => dueInfo(x.split(' ← ')[0])?.days === -1).length;
+    body.append(statTiles([[week.length, 'هذا الأسبوع'], [tomorrow, 'غداً'], [props.length, 'مقترحات'], [old, 'قديمة']].filter(([n], i) => i === 0 || i === 2 || n > 0)));
+    body.append(uiEl('div', 'grp', `هذا الأسبوع · ${week.length}`));
+    if (week.length) body.append(panelList(week, { kind: 'week' })); else empty('لا شيء موعده خلال الأيام السبعة القادمة.');
+    if (props.length) {
+      const openP = old > 0; // مقترح قديم ينتظر قراراً: القسم يظهر مفتوحاً
+      const h = uiEl('div', 'grp fold');
+      const arrow = uiEl('span', 'arrow', openP ? ' ▴' : ' ▾');
+      h.append(uiEl('span', '', `مقترحات تنتظر قرارك · ${props.length}`), arrow);
+      if (old) h.append(uiEl('span', 'chip old', `قديم ${old}`));
+      const ul = panelList(props, { kind: 'proposal' });
+      ul.hidden = !openP;
+      h.addEventListener('click', () => { ul.hidden = !ul.hidden; arrow.textContent = ul.hidden ? ' ▾' : ' ▴'; });
+      body.append(h, ul);
+    } else body.append(uiEl('div', 'grp', 'مقترحات تنتظر قرارك · 0'));
   } else if (tab === 'projects') {
     try { renderProjects(body, empty, demo); } catch (e) { empty('تعذّر عرض المشاريع: ' + (e?.message || e)); }
   } else if (tab === 'goals') {
