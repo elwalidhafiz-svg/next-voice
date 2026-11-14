@@ -825,8 +825,9 @@ function oppsBadLinks() { try { return JSON.parse(store.get('opps.badlink') || '
 function oppsApplyItems(sec) {
   const done = oppsApplied(), bad = oppsBadLinks(); // المبلَّغ عن رابطه يختفي حتى يتغير رابطه في اللوحة
   return oppsReal(sec.lines).map((l) => {
-    const [id = '', company = '', role = '', score = '', url = ''] = l.split(' | ').map((x) => x.trim());
-    return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '' };
+    // حقل سادس اختياري «السيرة: <اسم النسخة>»: النسخة التي اختارتها مهمة الالتقاط بعد قراءة الإعلان (من الشيت)
+    const [id = '', company = '', role = '', score = '', url = '', cvField = ''] = l.split(' | ').map((x) => x.trim());
+    return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '', cv: cvField.replace(/^السيرة:\s*/, '').trim() };
   }).filter((x) => x.id && !done[x.id] && bad[x.id] !== (x.url || '-'));
 }
 function oppsCount() { // ما يحتاج فعلاً منه في هذا التبويب: رسائل تنتظر اعتماده + إعلانات لم يقدّم عليها
@@ -1129,7 +1130,10 @@ function oppsAdCard(x, cvs) {
   const extra = uiEl('div', 'choice');
   extra.hidden = true;
   // السيرة الأنسب للمسمى ظاهرة على البطاقة (سطر تحت الأزرار)؛ باقي النسخ خلف «⋯» تحت «نسخة أخرى»
-  const cv = cvFor(x.role, cvs);
+  // الأولوية لما اختارته مهمة الالتقاط (حقل «السيرة» في اللوحة، بالاسم كما في CV Links)؛ وإلا فبالكلمات المفتاحية للمسمى
+  const norm2 = (s) => (s || '').toLowerCase().replace(/[^a-z\u0600-\u06ff]+/g, '');
+  const picked = x.cv && x.cv !== '-' ? cvs.find((c) => norm2(c.name) === norm2(x.cv)) : null;
+  const cv = picked || cvFor(x.role, cvs);
   const others = cvs.filter((c) => c !== cv);
   if (others.length) { extra.append(uiEl('span', 'meta-sm', 'نسخة أخرى:')); for (const c of others) extra.append(cvLink(c, c.name)); }
   const badBtn = uiEl('button', 'pill sm', 'الرابط لا يعمل');
@@ -1141,7 +1145,7 @@ function oppsAdCard(x, cvs) {
   more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; });
   row.append(more);
   main.append(row);
-  if (cv) { const best = cvLink(cv, '📄 السيرة الأنسب: ' + cv.name); best.className = 'cv-best'; main.append(best); }
+  if (cv) { const best = cvLink(cv, (picked ? '📄 السيرة الأنسب: ' : '📄 السيرة المقترحة (من المسمى): ') + cv.name); best.className = 'cv-best'; main.append(best); }
   main.append(extra, uiEl('div', 'meta-sm ad-id', x.id));
   li.append(main);
   return li;
