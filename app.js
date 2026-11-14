@@ -1138,14 +1138,26 @@ function oppsAdCard(x, cvs) {
   const cv = picked || cvFor(x.role, cvs);
   const alt = picked && x.alt ? cvs.find((c) => c !== cv && norm2(c.name) === norm2(x.alt)) : null; // البديل يُعرض فقط مع اختيار المهمة
   const others = cvs.filter((c) => c !== cv && c !== alt);
-  if (others.length) { extra.append(uiEl('span', 'meta-sm', 'نسخة أخرى:')); for (const c of others) extra.append(cvLink(c, c.name)); }
+  // باقي النسخ مجموعة في زر واحد يفتحها (خلف «⋯»)، حتى لا تملأ البطاقة
+  const othersRow = uiEl('div', 'choice');
+  othersRow.hidden = true;
+  for (const c of others) othersRow.append(cvLink(c, c.name));
+  let syncOthers = () => {};
+  if (others.length) {
+    const ob = uiEl('button', 'pill sm', '');
+    ob.type = 'button';
+    syncOthers = () => { ob.textContent = `نسخ أخرى (${others.length}) ${othersRow.hidden ? '▾' : '▴'}`; };
+    syncOthers();
+    ob.addEventListener('click', (ev) => { ev.preventDefault(); othersRow.hidden = !othersRow.hidden; syncOthers(); });
+    extra.append(ob);
+  }
   const badBtn = uiEl('button', 'pill sm', 'الرابط لا يعمل');
   badBtn.type = 'button';
   badBtn.addEventListener('click', (ev) => { ev.preventDefault(); oppsBadLink(x, badBtn); });
   extra.append(badBtn);
   const more = uiEl('button', 'pill sm', '⋯');
   more.type = 'button';
-  more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; });
+  more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; if (extra.hidden) { othersRow.hidden = true; syncOthers(); } });
   row.append(more);
   main.append(row);
   if (cv) { // زر بشكل باقي الأزرار (لا رابط نصي مسطَّر): تسمية صغيرة ثم اسم النسخة
@@ -1167,7 +1179,7 @@ function oppsAdCard(x, cvs) {
     main.append(cvRow);
     if (alt && x.altWhy) main.append(uiEl('div', 'meta-sm', `البديل: ${x.altWhy}`));
   }
-  main.append(extra, uiEl('div', 'meta-sm ad-id', x.id));
+  main.append(extra, othersRow, uiEl('div', 'meta-sm ad-id', x.id));
   li.append(main);
   return li;
 }
