@@ -153,9 +153,9 @@
   .tasks .habit-chip .dots { margin-inline-start: 0; }
   .tasks .habit-chip .pill.sm { padding: 3px 12px; font-size: 12px; }
   .tasks a.pill { text-decoration: none; }
-  .tasks .cv-best { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; border-color: var(--indigo); max-width: 100%; }
-  .tasks .cv-best.cv-alt { border-color: var(--line); }
-  .tasks .cv-best .cv-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .tasks .choice a.pill.cv-best { display: inline-flex; align-items: center; font-size: 13px; border-color: var(--indigo); max-width: 100%; }
+  .tasks .choice a.pill.cv-best.cv-alt { border-color: var(--line); }
+  .tasks .cv-best .cv-label { font-size: 11px; color: var(--muted); white-space: nowrap; margin-inline-end: 8px; } /* الفاصل بهامش لا بـ gap: يعمل أياً كان نوع العرض */
   .tasks .cv-best bdi { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tasks li.card { padding: 12px 2px; }
   .tasks li.card .t { font-size: 15px; font-weight: 600; }
@@ -350,6 +350,6 @@
   </form>
 </dialog>
 
-<script type="module" src="app.js?v=20261114d"></script>
+<script type="module" src="app.js?v=20261114e"></script>
 </body>
 </html>
