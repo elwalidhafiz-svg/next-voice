@@ -822,15 +822,45 @@ function oppsApplied() { try { return JSON.parse(store.get('opps.applied') || '{
 const oppsIsApply = (sec) => sec.title.startsWith('قدّم');
 const oppsReal = (lines) => lines.filter((l) => l && l !== 'لا شيء');
 function oppsBadLinks() { try { return JSON.parse(store.get('opps.badlink') || '{}'); } catch { return {}; } }
+// «لا أريد التقديم»: الوليد يتخطى إعلاناً لا يريده. الضغطة تفتح أسباباً سريعة (اختيار أحدها هو التأكيد)، ثم يُكتب طلب «فعل»
+// لنيكست الكبير: M = «متخطّى» وسطر في آخر T بالسبب، في صف المعرّف وحده. الإعلان يختفي فوراً على هذا الجهاز.
+const OPPS_SKIP_REASONS = ['المسمى لا يناسبني', 'الشركة لا تناسبني', 'المستوى أو الراتب', 'بعيدة عن خبرتي', 'بلا سبب'];
+function oppsSkipped() { // الإخفاء المحلي 24 ساعة: إن كُتب «متخطّى» في الشيت خرج الإعلان من اللوحة أصلاً، وإن لم يُكتب عاد ليظهر
+  let o = {};
+  try { o = JSON.parse(store.get('opps.skipped') || '{}'); } catch { o = {}; }
+  const now = Date.now();
+  for (const k of Object.keys(o)) if (now - o[k] > 24 * 3600 * 1000) delete o[k];
+  return o;
+}
+async function oppsSkip(x, reason, btn) {
+  btn.disabled = true; btn.textContent = '…';
+  const { date } = riyadhNow();
+  const why = reason === 'بلا سبب' ? '' : reason;
+  try {
+    await addToInbox({
+      title: `تخطّي فرصة ${x.id} ${x.company}`.slice(0, 60),
+      content: `الوليد ضغط «لا أريد التقديم» على ${x.id} (${x.company} — ${x.role}) يوم ${date} وأكّد باختيار السبب: ${why || 'لم يذكر سبباً'}.
+في شيت البحث عن فرص جديدة (${OPPS_SHEET})، تبويب «الفرص»، صف هذا المعرّف فقط (ابحث عنه في العمود A، وتأكد أن الشركة في C تطابق «${x.company}»؛ إن لم تطابق فلا تكتب شيئاً وأبلغ):
+1) اكتب في M: متخطّى
+2) أضف في آخر T دون مسح الموجود: «تخطّاها الوليد ${date}${why ? ': ' + why : ''} (من التطبيق)»
+لا تكتب في أي خلية أخرى، ولا في K ولا S ولا U، ولا تغيّر جهات الاتصال ولا ملفات المسودات. ردك سطر واحد بما تم.`,
+      kind: BIG_KIND, type: 'فعل',
+    });
+    const s = oppsSkipped(); s[x.id] = Date.now(); store.set('opps.skipped', JSON.stringify(s));
+    renderTasks();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'تعذّر — أعد المحاولة';
+  }
+}
 function oppsApplyItems(sec) {
-  const done = oppsApplied(), bad = oppsBadLinks(); // المبلَّغ عن رابطه يختفي حتى يتغير رابطه في اللوحة
+  const done = oppsApplied(), bad = oppsBadLinks(), skipped = oppsSkipped(); // المبلَّغ عن رابطه يختفي حتى يتغير رابطه في اللوحة
   return oppsReal(sec.lines).map((l) => {
     // حقل سادس اختياري «السيرة: <اسم النسخة>»: النسخة التي اختارتها مهمة الالتقاط بعد قراءة الإعلان (من الشيت)
     // وحقل سابع اختياري «بديل: <اسم النسخة> (<متى تُستعمل>)»: نسخة ثانية ذكرتها المهمة، والسبب بين قوسين اختياري
     const [id = '', company = '', role = '', score = '', url = '', cvField = '', altField = ''] = l.split(' | ').map((x) => x.trim());
     const am = altField.match(/^بديل:\s*(.+?)(?:\s*\((.+)\))?$/);
     return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '', cv: cvField.replace(/^السيرة:\s*/, '').trim(), alt: am ? am[1].trim() : '', altWhy: am && am[2] ? am[2].trim() : '' };
-  }).filter((x) => x.id && !done[x.id] && bad[x.id] !== (x.url || '-'));
+  }).filter((x) => x.id && !done[x.id] && !skipped[x.id] && bad[x.id] !== (x.url || '-'));
 }
 function oppsCount() { // ما يحتاج فعلاً منه في هذا التبويب: رسائل تنتظر اعتماده + إعلانات لم يقدّم عليها
   let n = 0;
@@ -1155,9 +1185,22 @@ function oppsAdCard(x, cvs) {
   badBtn.type = 'button';
   badBtn.addEventListener('click', (ev) => { ev.preventDefault(); oppsBadLink(x, badBtn); });
   extra.append(badBtn);
+  const skipRow = uiEl('div', 'choice');
+  skipRow.hidden = true;
+  skipRow.append(uiEl('span', 'meta-sm', 'لماذا؟'));
+  for (const r of OPPS_SKIP_REASONS) {
+    const rb = uiEl('button', 'pill sm', r);
+    rb.type = 'button';
+    rb.addEventListener('click', (ev) => { ev.preventDefault(); oppsSkip(x, r, rb); });
+    skipRow.append(rb);
+  }
+  const skipBtn = uiEl('button', 'pill sm', 'لا أريد التقديم');
+  skipBtn.type = 'button';
+  skipBtn.addEventListener('click', (ev) => { ev.preventDefault(); skipRow.hidden = !skipRow.hidden; skipBtn.classList.toggle('on', !skipRow.hidden); });
+  extra.append(skipBtn);
   const more = uiEl('button', 'pill sm', '⋯');
   more.type = 'button';
-  more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; if (extra.hidden) { othersRow.hidden = true; syncOthers(); } });
+  more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; if (extra.hidden) { othersRow.hidden = true; syncOthers(); skipRow.hidden = true; skipBtn.classList.remove('on'); } });
   row.append(more);
   main.append(row);
   if (cv) { // زر بشكل باقي الأزرار (لا رابط نصي مسطَّر): تسمية صغيرة ثم اسم النسخة
@@ -1179,7 +1222,7 @@ function oppsAdCard(x, cvs) {
     main.append(cvRow);
     if (alt && x.altWhy) main.append(uiEl('div', 'meta-sm', `البديل: ${x.altWhy}`));
   }
-  main.append(extra, othersRow, uiEl('div', 'meta-sm ad-id', x.id));
+  main.append(extra, othersRow, skipRow, uiEl('div', 'meta-sm ad-id', x.id));
   li.append(main);
   return li;
 }
