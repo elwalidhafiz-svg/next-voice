@@ -772,21 +772,38 @@ def opps_slot(now):
     return None
 
 
-OPPS_LINE = re.compile(r"^-\s*(OPP-\d+)\s*\|(.+)\|\s*(\d+(?:\.\d+)?)\s*\|\s*(https?://\S+)\s*$")
+OPPS_LINE = re.compile(r"^-\s*(OPP-\d+)\s*\|(.+)\|\s*(\d+(?:\.\d+)?)\s*\|\s*(https?://\S+)\s*(?:\|\s*(.*?))?\s*$")
+CV_LINKS_REL = Path("_System") / "CV Links.md"  # الملف نفسه في app.js (زر «السيرة»)
 
 
-def normalize_opps_line(line):
-    """سطر إعلان بالشكل «- OPP-123 | الشركة | المسمى | الدرجة | رابط»، أو None.
-    يكفي أن يبدأ بمعرّف OPP وينتهي برابط قبله رقم؛ إن احتوى الاسم أو المسمى على | فما بينها يُدمج:
-    الجزء الأخير هو المسمى، وما قبله يُدمج في الشركة بـ « - »."""
+def cv_names():
+    """أسماء نسخ السيرة كما في _System/CV Links.md (أول حقل في كل سطر «- الاسم | كلمات | الرابط»)."""
+    try:
+        text = (VAULT / CV_LINKS_REL).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [l[2:].split(" | ")[0].strip() for l in text.splitlines() if l.startswith("- ") and " | " in l]
+
+
+def normalize_opps_line(line, names=None):
+    """سطر إعلان بالشكل «- OPP-123 | الشركة | المسمى | الدرجة | رابط [| السيرة: <اسم النسخة>]»، أو None.
+    يكفي أن يبدأ بمعرّف OPP وفيه رابط قبله رقم؛ إن احتوى الاسم أو المسمى على | فما بينها يُدمج:
+    الجزء الأخير هو المسمى، وما قبله يُدمج في الشركة بـ « - ». الحقل السادس اختياري: يبقى إن كان «السيرة: -»
+    أو «السيرة: <اسم من CV Links>»، وإلا يُحذف ويبقى الإعلان."""
     m = OPPS_LINE.match(line.strip())
     if not m:
         return None
-    oid, middle, score, url = m.groups()
+    oid, middle, score, url, cv = m.groups()
     parts = [x.strip() for x in middle.split("|") if x.strip()]
     if len(parts) < 2:
         return None
-    return f"- {oid} | {' - '.join(parts[:-1])} | {parts[-1]} | {score} | {url}"
+    out = f"- {oid} | {' - '.join(parts[:-1])} | {parts[-1]} | {score} | {url}"
+    cm = re.fullmatch(r"السيرة:\s*(.+)", (cv or "").strip())
+    if cm:
+        name = cm.group(1).strip()
+        if name == "-" or name in (cv_names() if names is None else names):
+            out += f" | السيرة: {name}"
+    return out
 
 
 def clean_opps_body(body):
@@ -796,6 +813,7 @@ def clean_opps_body(body):
         raise RuntimeError("شكل غير متوقع: " + body[:200])
     body = body[body.index("## عليك الآن"):]
     out, in_apply, kept, dropped = [], False, 0, []
+    names = cv_names()
     for line in body.splitlines():
         if line.startswith("## "):
             if in_apply and kept == 0:
@@ -804,7 +822,7 @@ def clean_opps_body(body):
             out.append(line)
             continue
         if in_apply and line.startswith("- "):
-            fixed = normalize_opps_line(line)
+            fixed = normalize_opps_line(line, names)
             if fixed:
                 out.append(fixed); kept += 1
             elif line.strip() != "- لا شيء":
@@ -847,6 +865,7 @@ def opps_board(force=False):
         today = now.date()
         week = min(max((today - OPPS_WEEK1).days // 7 + 1, 1), 13)
         since = (today - timedelta(days=30)).isoformat()
+        cvs = "، ".join(f"«{n}»" for n in cv_names()) or "(لا توجد)"
         prompt = f"""اقرأ شيت البحث عن فرص جديدة {JOBS_SHEET} بأداة Google Sheets. **قراءة فقط: لا تكتب في أي شيت ولا ملف.**
 اليوم {today.isoformat()} بتوقيت الرياض. «آخر 30 يوماً» = من {since} حتى اليوم.
 
@@ -858,7 +877,8 @@ def opps_board(force=False):
    - سطر لكل جهة في «جهات الاتصال» حالتها (L) «ردّ» تنتظر جواباً: «- ردّ <الاسم> من <الشركة> — يحتاج جوابك».
    - إن لم يبقَ شيء فاكتب «- لا شيء».
 2. **قدّم على الإعلانات:** صفوف تبويب «الفرص» التي تحقق كل الشروط: F = «إعلان وظيفة»، وM إحدى: مُقيَّم، مُخصَّص، بانتظار الموافقة، أُرسل، متابعة؛ وK (الدرجة) ≥ قيمة الخلية 'الإعدادات'!B4؛ وE رابط يبدأ بـ http؛ وU («تقديم مباشر») فارغ؛ وB (التاريخ) من {since} فما بعد. رتّبها بالدرجة تنازلياً وخذ أول 10. كل سطر بهذا الشكل حرفياً (الفاصل مسافة ثم | ثم مسافة، والدرجة رقم فقط، والرابط كما في E كاملاً). إن احتوى اسم الشركة أو المسمى على | فاستبدله بـ -:
-   - OPP-123 | الشركة | المسمى | الدرجة | https://رابط-الإعلان
+   - OPP-123 | الشركة | المسمى | الدرجة | https://رابط-الإعلان | السيرة: <اسم النسخة>
+   **حقل السيرة:** اسم النسخة واحد من هذه الأسماء حرفياً فقط: {cvs}. المصدر: عمود «نسخة الـ CV» (Q) لذلك الصف، وإن كان فارغاً فعبارة «نسخة الـ CV: …» أو «CV: …» في الملاحظات (T). طابِق اسم الملف (مثل ElWalid_Hafiz_CV_Performance_Marketing.pdf) بالاسم المقابل من القائمة. إن لم تُذكر نسخة، أو كُتب «تُحدَّد عند التخصيص»، أو لم يطابق اسماً من القائمة، فاكتب «السيرة: -». لا تخمّن النسخة من المسمى، ولا تضع « | » داخل الحقل.
 3. **ما يحدث:**
    - عدد الفرص المسجّلة اليوم (B = {today.isoformat()}) موزّعة على قنواتها.
    - عدد الرسائل المرسلة اليوم (عمود M في «جهات الاتصال» = {today.isoformat()}).
