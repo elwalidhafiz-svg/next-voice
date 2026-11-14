@@ -1128,9 +1128,10 @@ function oppsAdCard(x, cvs) {
   row.append(btn);
   const extra = uiEl('div', 'choice');
   extra.hidden = true;
+  // السيرة الأنسب للمسمى ظاهرة على البطاقة (سطر تحت الأزرار)؛ باقي النسخ خلف «⋯» تحت «نسخة أخرى»
   const cv = cvFor(x.role, cvs);
-  if (cv) extra.append(cvLink(cv, 'السيرة: ' + cv.name));
-  for (const c of cvs.filter((c) => c !== cv)) extra.append(cvLink(c, c.name));
+  const others = cvs.filter((c) => c !== cv);
+  if (others.length) { extra.append(uiEl('span', 'meta-sm', 'نسخة أخرى:')); for (const c of others) extra.append(cvLink(c, c.name)); }
   const badBtn = uiEl('button', 'pill sm', 'الرابط لا يعمل');
   badBtn.type = 'button';
   badBtn.addEventListener('click', (ev) => { ev.preventDefault(); oppsBadLink(x, badBtn); });
@@ -1139,7 +1140,9 @@ function oppsAdCard(x, cvs) {
   more.type = 'button';
   more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; });
   row.append(more);
-  main.append(row, extra, uiEl('div', 'meta-sm ad-id', x.id));
+  main.append(row);
+  if (cv) { const best = cvLink(cv, '📄 السيرة الأنسب: ' + cv.name); best.className = 'cv-best'; main.append(best); }
+  main.append(extra, uiEl('div', 'meta-sm ad-id', x.id));
   li.append(main);
   return li;
 }
