@@ -826,8 +826,10 @@ function oppsApplyItems(sec) {
   const done = oppsApplied(), bad = oppsBadLinks(); // المبلَّغ عن رابطه يختفي حتى يتغير رابطه في اللوحة
   return oppsReal(sec.lines).map((l) => {
     // حقل سادس اختياري «السيرة: <اسم النسخة>»: النسخة التي اختارتها مهمة الالتقاط بعد قراءة الإعلان (من الشيت)
-    const [id = '', company = '', role = '', score = '', url = '', cvField = ''] = l.split(' | ').map((x) => x.trim());
-    return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '', cv: cvField.replace(/^السيرة:\s*/, '').trim() };
+    // وحقل سابع اختياري «بديل: <اسم النسخة> (<متى تُستعمل>)»: نسخة ثانية ذكرتها المهمة، والسبب بين قوسين اختياري
+    const [id = '', company = '', role = '', score = '', url = '', cvField = '', altField = ''] = l.split(' | ').map((x) => x.trim());
+    const am = altField.match(/^بديل:\s*(.+?)(?:\s*\((.+)\))?$/);
+    return { id, company, role, score, url: /^https?:\/\//.test(url) ? url : '', cv: cvField.replace(/^السيرة:\s*/, '').trim(), alt: am ? am[1].trim() : '', altWhy: am && am[2] ? am[2].trim() : '' };
   }).filter((x) => x.id && !done[x.id] && bad[x.id] !== (x.url || '-'));
 }
 function oppsCount() { // ما يحتاج فعلاً منه في هذا التبويب: رسائل تنتظر اعتماده + إعلانات لم يقدّم عليها
@@ -1134,7 +1136,8 @@ function oppsAdCard(x, cvs) {
   const norm2 = (s) => (s || '').toLowerCase().replace(/[^a-z\u0600-\u06ff]+/g, '');
   const picked = x.cv && x.cv !== '-' ? cvs.find((c) => norm2(c.name) === norm2(x.cv)) : null;
   const cv = picked || cvFor(x.role, cvs);
-  const others = cvs.filter((c) => c !== cv);
+  const alt = picked && x.alt ? cvs.find((c) => c !== cv && norm2(c.name) === norm2(x.alt)) : null; // البديل يُعرض فقط مع اختيار المهمة
+  const others = cvs.filter((c) => c !== cv && c !== alt);
   if (others.length) { extra.append(uiEl('span', 'meta-sm', 'نسخة أخرى:')); for (const c of others) extra.append(cvLink(c, c.name)); }
   const badBtn = uiEl('button', 'pill sm', 'الرابط لا يعمل');
   badBtn.type = 'button';
@@ -1153,7 +1156,16 @@ function oppsAdCard(x, cvs) {
     best.append(uiEl('span', 'cv-label', picked ? 'السيرة الأنسب' : 'السيرة (من المسمى)'), name);
     const cvRow = uiEl('div', 'choice');
     cvRow.append(best);
+    if (alt) {
+      const a2 = cvLink(alt, '');
+      a2.className = 'pill sm cv-best cv-alt';
+      const n2 = document.createElement('bdi');
+      n2.textContent = alt.name;
+      a2.append(uiEl('span', 'cv-label', 'أو'), n2);
+      cvRow.append(a2);
+    }
     main.append(cvRow);
+    if (alt && x.altWhy) main.append(uiEl('div', 'meta-sm', `البديل: ${x.altWhy}`));
   }
   main.append(extra, uiEl('div', 'meta-sm ad-id', x.id));
   li.append(main);
