@@ -1194,13 +1194,32 @@ function oppsAdCard(x, cvs) {
     rb.addEventListener('click', (ev) => { ev.preventDefault(); oppsSkip(x, r, rb); });
     skipRow.append(rb);
   }
+  // سبب يكتبه بنفسه: يُنظَّف (سطر واحد، بلا «»، 120 حرفاً) ولا يُرسل فارغاً
+  const ownRow = uiEl('div', 'choice');
+  ownRow.hidden = true;
+  const ownIn = document.createElement('input');
+  ownIn.className = 'draft-edit'; ownIn.placeholder = 'اكتب السبب…'; ownIn.dir = 'auto'; ownIn.maxLength = 120;
+  const ownSend = uiEl('button', 'pill sm', 'أرسل');
+  ownSend.type = 'button';
+  const ownGo = () => {
+    const v = Array.from(ownIn.value.replace(/[«»"\n\r|]/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 120).join('');
+    if (!v) { ownIn.focus(); return; }
+    oppsSkip(x, v, ownSend);
+  };
+  ownSend.addEventListener('click', (ev) => { ev.preventDefault(); ownGo(); });
+  ownIn.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); ownGo(); } });
+  ownRow.append(ownIn, ownSend);
+  const ownBtn = uiEl('button', 'pill sm', 'سبب آخر…');
+  ownBtn.type = 'button';
+  ownBtn.addEventListener('click', (ev) => { ev.preventDefault(); ownRow.hidden = !ownRow.hidden; ownBtn.classList.toggle('on', !ownRow.hidden); if (!ownRow.hidden) ownIn.focus(); });
+  skipRow.append(ownBtn);
   const skipBtn = uiEl('button', 'pill sm', 'لا أريد التقديم');
   skipBtn.type = 'button';
-  skipBtn.addEventListener('click', (ev) => { ev.preventDefault(); skipRow.hidden = !skipRow.hidden; skipBtn.classList.toggle('on', !skipRow.hidden); });
+  skipBtn.addEventListener('click', (ev) => { ev.preventDefault(); skipRow.hidden = !skipRow.hidden; skipBtn.classList.toggle('on', !skipRow.hidden); if (skipRow.hidden) { ownRow.hidden = true; ownBtn.classList.remove('on'); } });
   extra.append(skipBtn);
   const more = uiEl('button', 'pill sm', '⋯');
   more.type = 'button';
-  more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; if (extra.hidden) { othersRow.hidden = true; syncOthers(); skipRow.hidden = true; skipBtn.classList.remove('on'); } });
+  more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; if (extra.hidden) { othersRow.hidden = true; syncOthers(); skipRow.hidden = true; skipBtn.classList.remove('on'); ownRow.hidden = true; ownBtn.classList.remove('on'); } });
   row.append(more);
   main.append(row);
   if (cv) { // زر بشكل باقي الأزرار (لا رابط نصي مسطَّر): تسمية صغيرة ثم اسم النسخة
@@ -1222,7 +1241,7 @@ function oppsAdCard(x, cvs) {
     main.append(cvRow);
     if (alt && x.altWhy) main.append(uiEl('div', 'meta-sm', `البديل: ${x.altWhy}`));
   }
-  main.append(extra, othersRow, skipRow, uiEl('div', 'meta-sm ad-id', x.id));
+  main.append(extra, othersRow, skipRow, ownRow, uiEl('div', 'meta-sm ad-id', x.id));
   li.append(main);
   return li;
 }
