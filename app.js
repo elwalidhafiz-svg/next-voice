@@ -1145,7 +1145,16 @@ function oppsAdCard(x, cvs) {
   more.addEventListener('click', (ev) => { ev.preventDefault(); extra.hidden = !extra.hidden; });
   row.append(more);
   main.append(row);
-  if (cv) { const best = cvLink(cv, (picked ? '📄 السيرة الأنسب: ' : '📄 السيرة المقترحة (من المسمى): ') + cv.name); best.className = 'cv-best'; main.append(best); }
+  if (cv) { // زر بشكل باقي الأزرار (لا رابط نصي مسطَّر): تسمية صغيرة ثم اسم النسخة
+    const best = cvLink(cv, '');
+    best.className = 'pill sm cv-best';
+    const name = document.createElement('bdi');
+    name.textContent = cv.name;
+    best.append(uiEl('span', 'cv-label', picked ? 'السيرة الأنسب' : 'السيرة (من المسمى)'), name);
+    const cvRow = uiEl('div', 'choice');
+    cvRow.append(best);
+    main.append(cvRow);
+  }
   main.append(extra, uiEl('div', 'meta-sm ad-id', x.id));
   li.append(main);
   return li;
